@@ -48,7 +48,7 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-static const char *TAG = "wifi station";
+static const char *TAG = "kvswebrtc_main";
 
 static int s_retry_num = 0;
 
@@ -164,6 +164,79 @@ static void initialize_sntp(void)
     sntp_init();
 }
 
+esp_err_t sdcard_init(void)
+{
+    // Options for mounting the filesystem.
+    // If format_if_mount_failed is set to true, SD card will be partitioned and
+    // formatted in case when mounting fails.
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+#ifdef CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED
+        .format_if_mount_failed = true,
+#else
+        .format_if_mount_failed = false,
+#endif // EXAMPLE_FORMAT_IF_MOUNT_FAILED
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+
+    ESP_LOGI(TAG, "Initializing SD card");
+    ESP_LOGI(TAG, "Using SDMMC peripheral");
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+
+    // This initializes the slot without card detect (CD) and write protect (WP) signals.
+    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+
+    // Set bus width to use:
+#ifdef CONFIG_EXAMPLE_SDMMC_BUS_WIDTH_4
+    slot_config.width = 4;
+#else
+    slot_config.width = 1;
+#endif
+
+    // On chips where the GPIOs used for SD card can be configured, set them in
+    // the slot_config structure:
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+    slot_config.clk = GPIO_NUM_39;//CONFIG_EXAMPLE_PIN_CLK;
+    slot_config.cmd = GPIO_NUM_38;//CONFIG_EXAMPLE_PIN_CMD;
+    slot_config.d0 = GPIO_NUM_40;//CONFIG_EXAMPLE_PIN_D0;
+#ifdef CONFIG_EXAMPLE_SDMMC_BUS_WIDTH_4
+    slot_config.d1 = CONFIG_EXAMPLE_PIN_D1;
+    slot_config.d2 = CONFIG_EXAMPLE_PIN_D2;
+    slot_config.d3 = CONFIG_EXAMPLE_PIN_D3;
+#endif  // CONFIG_EXAMPLE_SDMMC_BUS_WIDTH_4
+#endif  // CONFIG_IDF_TARGET_ESP32S3
+
+    // Enable internal pullups on enabled pins. The internal pullups
+    // are insufficient however, please make sure 10k external pullups are
+    // connected on the bus. This is for debug / example purpose only.
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    // Use settings defined above to initialize SD card and mount FAT filesystem.
+    // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
+    // Please check its source code and implement error recovery when developing
+    // production applications.
+    ESP_LOGI(TAG, "Mounting filesystem");
+    sdmmc_card_t* card;
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem. "
+                     "If you want the card to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize the card (%s). "
+                     "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+        }
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Filesystem mounted");
+
+    // Card has been initialized, print its properties
+    sdmmc_card_print_info(stdout, card);
+    return ESP_OK;
+}
+
 void app_main(void)
 {
     //Initialize NVS
@@ -177,71 +250,8 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 
-    // initialize the fatfs and sd card.
-    {   
-        ESP_LOGI(TAG, "Initializing SD card");
-
-    #ifndef USE_SPI_MODE
-        ESP_LOGI(TAG, "Using SDMMC peripheral");
-        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-
-        // This initializes the slot without card detect (CD) and write protect (WP) signals.
-        // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-        sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-
-        // To use 1-line SD mode, uncomment the following line:
-        // slot_config.width = 1;
-
-        // GPIOs 15, 2, 4, 12, 13 should have external 10k pull-ups.
-        // Internal pull-ups are not sufficient. However, enabling internal pull-ups
-        // does make a difference some boards, so we do that here.
-        gpio_set_pull_mode(15, GPIO_PULLUP_ONLY);   // CMD, needed in 4- and 1- line modes
-        gpio_set_pull_mode(2, GPIO_PULLUP_ONLY);    // D0, needed in 4- and 1-line modes
-        gpio_set_pull_mode(4, GPIO_PULLUP_ONLY);    // D1, needed in 4-line mode only
-        gpio_set_pull_mode(12, GPIO_PULLUP_ONLY);   // D2, needed in 4-line mode only
-        gpio_set_pull_mode(13, GPIO_PULLUP_ONLY);   // D3, needed in 4- and 1-line modes
-
-    #else
-        ESP_LOGI(TAG, "Using SPI peripheral");
-
-        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-        sdspi_slot_config_t slot_config = SDSPI_SLOT_CONFIG_DEFAULT();
-        slot_config.gpio_miso = PIN_NUM_MISO;
-        slot_config.gpio_mosi = PIN_NUM_MOSI;
-        slot_config.gpio_sck  = PIN_NUM_CLK;
-        slot_config.gpio_cs   = PIN_NUM_CS;
-        // This initializes the slot without card detect (CD) and write protect (WP) signals.
-        // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-    #endif //USE_SPI_MODE
-
-        // Options for mounting the filesystem.
-        // If format_if_mount_failed is set to true, SD card will be partitioned and
-        // formatted in case when mounting fails.
-        esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-            .format_if_mount_failed = false,
-            .max_files = 5,
-            .allocation_unit_size = 16 * 1024
-        };
-
-        // Use settings defined above to initialize SD card and mount FAT filesystem.
-        // Note: esp_vfs_fat_sdmmc_mount is an all-in-one convenience function.
-        // Please check its source code and implement error recovery when developing
-        // production applications.
-        sdmmc_card_t* card;
-        esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
-
-        if (ret != ESP_OK) {
-            if (ret == ESP_FAIL) {
-                ESP_LOGE(TAG, "Failed to mount filesystem. "
-                    "If you want the card to be formatted, set format_if_mount_failed = true.");
-            } else {
-                ESP_LOGE(TAG, "Failed to initialize the card (%s). "
-                    "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
-            }
-            return;
-        }
-        // Card has been initialized, print its properties
-        sdmmc_card_print_info(stdout, card);    
+    if (sdcard_init() == ESP_FAIL) {
+        return;
     }
 
     // using ntp to acquire the current time.
@@ -260,7 +270,7 @@ void app_main(void)
         time(&now);
         localtime_r(&now, &timeinfo);
     }
-    {        
+    {
         uint32_t freeSize = esp_get_free_heap_size();
         printf("The available size of heap:%d\n", freeSize);
     }
@@ -270,8 +280,11 @@ void app_main(void)
     setenv("AWS_WEBRTC_CHANNEL", CONFIG_AWS_KVS_CHANNEL, 1);
     #define IOT_CREDENTIAL (0)
     #if (IOT_CREDENTIAL == 0)
+
     setenv("AWS_ACCESS_KEY_ID", CONFIG_AWS_ACCESS_KEY_ID, 1);
     setenv("AWS_SECRET_ACCESS_KEY", CONFIG_AWS_SECRET_ACCESS_KEY, 1);
+    setenv("AWS_SESSION_TOKEN", CONFIG_AWS_SESSION_TOKEN, 1);
+
     #else
     setenv("AWS_IOT_CORE_CREDENTIAL_ENDPOINT", CONFIG_AWS_IOT_CORE_CREDENTIAL_ENDPOINT, 1);
     setenv("AWS_IOT_CORE_CERT", CONFIG_AWS_IOT_CORE_CERT, 1);
@@ -279,7 +292,7 @@ void app_main(void)
     setenv("AWS_IOT_CORE_ROLE_ALIAS", CONFIG_AWS_IOT_CORE_ROLE_ALIAS, 1);
     setenv("AWS_IOT_CORE_THING_NAME", CONFIG_AWS_IOT_CORE_THING_NAME, 1);
     #endif
-    
+
     WebRTCAppMain(&gAppMediaSrc);
 
     // All done, unmount partition and disable SDMMC or SPI peripheral

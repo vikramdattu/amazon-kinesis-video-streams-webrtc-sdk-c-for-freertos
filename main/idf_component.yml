@@ -1,0 +1,16 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espressif/esp32_s3_eye:
+    version: "*"
+    rules:
+      - if: "target in [esp32s3]"
+
+  espressif/esp_h264:
+    matches:
+      - if: "target in [esp32s3]"
+        version: "~0.1.1"
+      - if: "target in [esp32p4]"
+        version: "*"
+
+  espressif/esp32-camera:
+    version: ^2.0.2

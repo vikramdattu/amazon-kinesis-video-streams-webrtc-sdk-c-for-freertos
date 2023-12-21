@@ -37,10 +37,11 @@ idf_component_register(SRCS "kvswebrtc_example_main.c"
                             "AppMetrics.c"
                             "AppSignaling.c"
                             "AppWebRTC.c"
+                            "app_camera_esp.c"
+                            "H264FrameGrabber.c"
                     INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
                     REQUIRES nvs_flash mbedtls lwip fatfs esp_common pthread
                     )
-
 
 idf_component_get_property(nvs_flash_lib nvs_flash COMPONENT_LIB)
 idf_component_get_property(mbedtls_lib mbedtls COMPONENT_LIB)

@@ -16,6 +16,7 @@
 #include "AppMediaSrc_ESP32_FileSrc.h"
 #include "AppCommon.h"
 #include "fileio.h"
+#include <stdbool.h>
 
 #define NUMBER_OF_H264_FRAME_FILES               1500
 #define NUMBER_OF_OPUS_FRAME_FILES               618
@@ -78,6 +79,11 @@ CleanUp:
     return retStatus;
 }
 
+#if CONFIG_IDF_TARGET_ESP32S3
+#define USE_H264_ENC    1
+#include "H264FrameGrabber.h"
+#endif
+
 PVOID sendVideoPackets(PVOID args)
 {
     STATUS retStatus = STATUS_SUCCESS;
@@ -99,6 +105,14 @@ PVOID sendVideoPackets(PVOID args)
     lastFrameTime = startTime;
 
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
+#if USE_H264_ENC
+        get_h264_encoded_frame(pCodecStreamConf->pFrameBuffer, &frameSize);
+
+        // #TBD
+        frame.flags = FRAME_FLAG_KEY_FRAME;
+        frame.frameData = pCodecStreamConf->pFrameBuffer;
+        frame.size = frameSize;
+#else
         fileIndex = fileIndex % NUMBER_OF_H264_FRAME_FILES + 1;
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/h264SampleFrames/frame-%04d.h264", fileIndex);
 
@@ -116,6 +130,7 @@ PVOID sendVideoPackets(PVOID args)
         frame.size = frameSize;
 
         CHK(readFrameFromDisk(frame.frameData, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_VIDEO_SINK);
+#endif
 
         frame.presentationTs += FILESRC_VIDEO_FRAME_DURATION;
         frame.trackId = DEFAULT_VIDEO_TRACK_ID;
@@ -168,7 +183,7 @@ PVOID sendAudioPackets(PVOID args)
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
         fileIndex = fileIndex % NUMBER_OF_OPUS_FRAME_FILES + 1;
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/opusSampleFrames/sample-%03d.opus", fileIndex);
-        
+
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_AUDIO_SINK);
         // Re-alloc if needed
         if (frameSize > pCodecStreamConf->frameBufferSize) {
