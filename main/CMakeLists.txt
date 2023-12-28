@@ -40,6 +40,7 @@ idf_component_register(SRCS "kvswebrtc_example_main.c"
                             "app_camera_esp.c"
                             "H264FrameGrabber.c"
                     INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
+                    PRIV_REQUIRES esp_wifi
                     REQUIRES nvs_flash mbedtls lwip fatfs esp_common pthread
                     )
 
@@ -169,4 +170,6 @@ endif()
 if(ENABLE_DATA_CHANNEL)
         set_property(TARGET kvsWebrtcClient APPEND PROPERTY INTERFACE_LINK_LIBRARIES usrsctp-static)
 endif()
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-format-truncation -Wno-error=restrict")
 target_link_libraries(${COMPONENT_LIB} PUBLIC kvsWebrtcClient)

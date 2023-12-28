@@ -54,9 +54,9 @@ STATUS searchSslCert(PAppCredential pAppCredential)
     pAppCredential->pCaCertPath = GETENV(CACERT_PATH_ENV_VAR);
 
     // if ca cert path is not set from the environment, try to use the one that cmake detected
-    // if ca cert path is not set from the environment, try to use the one that cmake detected
     if (pAppCredential->pCaCertPath == NULL) {
-        CHK_ERR(STRNLEN(DEFAULT_KVS_CACERT_PATH, MAX_PATH_LEN) > 0, STATUS_INVALID_OPERATION, "No ca cert path given (error:%s)", strerror(errno));
+        CHK_ERR((STRLEN(DEFAULT_KVS_CACERT_PATH) < MAX_PATH_LEN), STATUS_INVALID_OPERATION, "cacert length exceeds %d", (int) MAX_PATH_LEN);
+        CHK_ERR((STRLEN(DEFAULT_KVS_CACERT_PATH) > 0), STATUS_INVALID_OPERATION, "No ca cert path given");
         pAppCredential->pCaCertPath = DEFAULT_KVS_CACERT_PATH;
     } else {
         CHK(pAppCredential->pCaCertPath != NULL, STATUS_APP_CREDENTIAL_MISS_CACERT_PATH);

@@ -15,6 +15,7 @@
 #define LOG_CLASS "AppMain"
 #include "AppCommon.h"
 #include "instrumented_allocators.h"
+#include <inttypes.h>
 
 INT32 WebRTCAppMain(PAppMediaSrc pAppMediaSrc)
 {
@@ -25,16 +26,22 @@ INT32 WebRTCAppMain(PAppMediaSrc pAppMediaSrc)
     printf("[WebRTC] Starting\n");
     UINT64 startTime, endTime;
 
+    print_mem_stats();
+
+    printf("Before InitApp\n");
     startTime = GETTIME();
     retStatus = initApp(TRUE, TRUE, pAppMediaSrc, &pAppConfiguration);
     if (retStatus != STATUS_SUCCESS) {
-        printf("[WebRTC] initApp(): operation returned status code: 0x%08x \n", retStatus);
+        printf("[WebRTC] initApp(): operation returned status code: 0x%08" PRIx32 " \n", retStatus);
         goto CleanUp;
     }
 
+    printf("InitApp Done\n");
+    print_mem_stats();
+
     retStatus = runApp(pAppConfiguration);
     if (retStatus != STATUS_SUCCESS) {
-        printf("[WebRTC] runApp(): operation returned status code: 0x%08x \n", retStatus);
+        printf("[WebRTC] runApp(): operation returned status code: 0x%08" PRIx32 " \n", retStatus);
     }
     endTime = GETTIME();
 
@@ -43,7 +50,7 @@ INT32 WebRTCAppMain(PAppMediaSrc pAppMediaSrc)
     // Checking for termination
     retStatus = pollApp(pAppConfiguration);
     if (retStatus != STATUS_SUCCESS) {
-        printf("[WebRTC] pollApp(): operation returned status code: 0x%08x \n", retStatus);
+        printf("[WebRTC] pollApp(): operation returned status code: 0x%08" PRIx32 " \n", retStatus);
         goto CleanUp;
     }
     printf("[WebRTC] streaming session terminated\n");
@@ -51,7 +58,7 @@ INT32 WebRTCAppMain(PAppMediaSrc pAppMediaSrc)
 CleanUp:
 
     if (retStatus != STATUS_SUCCESS) {
-        printf("[WebRTC] terminated with status code 0x%08x \n", retStatus);
+        printf("[WebRTC] terminated with status code 0x%08" PRIx32 " \n", retStatus);
     }
 
     printf("[WebRTC] cleaning up....\n");
@@ -59,7 +66,7 @@ CleanUp:
     if (pAppConfiguration != NULL) {
         retStatus = freeApp(&pAppConfiguration);
         if (retStatus != STATUS_SUCCESS) {
-            printf("[WebRTC] freeApp(): operation returned status code: 0x%08x \n", retStatus);
+            printf("[WebRTC] freeApp(): operation returned status code: 0x%08" PRIx32 " \n", retStatus);
         }
     }
     printf("[WebRTC] cleanup done\n");

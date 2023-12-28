@@ -43,6 +43,7 @@ static esp_h264_enc_t initialize_h264_encoder();
     }
 
     return handle;
+
 h264_example_exit:
     if (in_frame.raw_data.buffer) {
         heap_caps_free(in_frame.raw_data.buffer);
@@ -59,7 +60,14 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
     static uint8_t fill_val = 0;
     if (is_first) {
         app_camera_init();
+
+        printf("camera init done\n");
+
         initialize_encoder();
+
+        print_mem_stats();
+
+        printf("encoder initialized\n");
         is_first = false;
     }
     frame_count = 0;

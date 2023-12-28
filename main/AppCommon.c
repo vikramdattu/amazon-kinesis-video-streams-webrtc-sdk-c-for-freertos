@@ -134,6 +134,7 @@ static STATUS app_common_onSignalingClientStateChanged(UINT64 userData, SIGNALIN
 
     signaling_client_getStateString(state, &pStateStr);
     DLOGI("Signaling client state changed to %d - '%s'", state, pStateStr);
+    print_mem_stats();
 
     // Return success to continue
     return retStatus;
@@ -648,6 +649,7 @@ STATUS app_common_createStreamingSession(PAppConfiguration pAppConfiguration, PC
     CHK_STATUS((pc_onDataChannel(pStreamingSession->pPeerConnection, (UINT64) pStreamingSession, onDataChannel)));
 #endif
 
+#ifdef ENABLE_STREAMING
     // Add a SendRecv Transceiver of type video
     CHK_STATUS((pAppMediaSrc->app_media_source_queryVideoCap(pAppConfiguration->pMediaContext, &codec)));
     CHK_STATUS((pc_addSupportedCodec(pStreamingSession->pPeerConnection, codec)));
@@ -682,6 +684,7 @@ STATUS app_common_createStreamingSession(PAppConfiguration pAppConfiguration, PC
     // twcc bandwidth estimation
     // CHK_STATUS((peerConnectionOnSenderBandwidthEstimation(pStreamingSession->pPeerConnection, (UINT64) pStreamingSession,
                                                          // app_common_onSenderBandwidthEstimation)));
+#endif
 
     pStreamingSession->firstFrame = TRUE;
     pStreamingSession->startUpLatency = 0;
@@ -779,7 +782,9 @@ STATUS initApp(BOOL trickleIce, BOOL useTurn, PAppMediaSrc pAppMediaSrc, PAppCon
     pAppConfiguration->iceCandidatePairStatsTimerId = MAX_UINT32;
     pAppConfiguration->pregenerateCertTimerId = MAX_UINT32;
 
-    DLOGD("initializing the app with channel(%s)", pChannel);
+    DLOGI("initializing the app with channel(%s)", pChannel);
+
+    print_mem_stats();
 
     app_metrics_setupFileLogging(&pAppConfiguration->enableFileLogging);
     CHK_STATUS((app_credential_create(&pAppConfiguration->appCredential)));
@@ -817,6 +822,8 @@ STATUS initApp(BOOL trickleIce, BOOL useTurn, PAppMediaSrc pAppMediaSrc, PAppCon
     CHK_STATUS((app_signaling_init(pAppSignaling, app_common_onSignalingMessageReceived, app_common_onSignalingClientStateChanged,
                                    app_common_onSignalingClientError, (UINT64) pAppConfiguration, useTurn)));
 
+    printf("app_signaling_init done\n");
+    print_mem_stats();
     ATOMIC_STORE_BOOL(&pAppConfiguration->sigInt, FALSE);
     ATOMIC_STORE_BOOL(&pAppConfiguration->mediaThreadStarted, FALSE);
     ATOMIC_STORE_BOOL(&pAppConfiguration->terminateApp, FALSE);
@@ -830,6 +837,7 @@ STATUS initApp(BOOL trickleIce, BOOL useTurn, PAppMediaSrc pAppMediaSrc, PAppCon
     CHK_STATUS(
         (hash_table_createWithParams(APP_HASH_TABLE_BUCKET_COUNT, APP_HASH_TABLE_BUCKET_LENGTH, &pAppConfiguration->pRemoteRtcPeerConnections)));
 
+#ifdef ENABLE_STREAMING
     pAppConfiguration->pAppMediaSrc = pAppMediaSrc;
     // the initialization of media source.
     CHK_STATUS((pAppMediaSrc->app_media_source_init(&pAppConfiguration->pMediaContext)));
@@ -837,11 +845,13 @@ STATUS initApp(BOOL trickleIce, BOOL useTurn, PAppMediaSrc pAppMediaSrc, PAppCon
     CHK_STATUS((pAppMediaSrc->app_media_source_linkEosHook(pAppConfiguration->pMediaContext, app_common_onMediaEosHook, pAppConfiguration)));
 
     pAppConfiguration->mediaSource = pAppMediaSrc->app_media_source_run;
-    DLOGD("The intialization of the media source is completed successfully");
-
+    DLOGI("The intialization of the media source is completed successfully");
+#endif
+    print_mem_stats();
     // Initalize KVS WebRTC. This must be done before anything else, and must only be done once.
     CHK_STATUS((app_webrtc_init(pAppConfiguration)));
-    DLOGD("The initialization of WebRTC  is completed successfully");
+    DLOGI("The initialization of WebRTC  is completed successfully");
+    print_mem_stats();
     gAppConfiguration = pAppConfiguration;
 
     // Start the cert pre-gen timer callback

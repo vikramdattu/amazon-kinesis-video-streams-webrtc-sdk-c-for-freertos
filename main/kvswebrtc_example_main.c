@@ -26,6 +26,7 @@
 
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
+#include <inttypes.h>
 
 #include "AppMain.h"
 #include "AppMediaSrc_ESP32_FileSrc.h"
@@ -270,10 +271,8 @@ void app_main(void)
         time(&now);
         localtime_r(&now, &timeinfo);
     }
-    {
-        uint32_t freeSize = esp_get_free_heap_size();
-        printf("The available size of heap:%d\n", freeSize);
-    }
+
+    print_mem_stats();
 
     setenv("AWS_KVS_LOG_LEVEL", CONFIG_AWS_KVS_LOG_LEVEL, 1);
     setenv("AWS_DEFAULT_REGION", CONFIG_AWS_DEFAULT_REGION, 1);
@@ -294,6 +293,8 @@ void app_main(void)
     #endif
 
     WebRTCAppMain(&gAppMediaSrc);
+
+    print_mem_stats();
 
     // All done, unmount partition and disable SDMMC or SPI peripheral
     esp_vfs_fat_sdmmc_unmount();

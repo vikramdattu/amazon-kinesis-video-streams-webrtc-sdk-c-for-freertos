@@ -17,6 +17,7 @@
 #include "AppCommon.h"
 #include "fileio.h"
 #include <stdbool.h>
+#include <inttypes.h>
 
 #define NUMBER_OF_H264_FRAME_FILES               1500
 #define NUMBER_OF_OPUS_FRAME_FILES               618
@@ -66,7 +67,7 @@ STATUS readFrameFromDisk(PBYTE pFrame, PUINT32 pSize, PCHAR frameFilePath)
     // Get the size and read into frame
     retStatus = fileio_read(frameFilePath, TRUE, pFrame, &size);
     if (retStatus != STATUS_SUCCESS) {
-        printf("[KVS Master] readFile(): operation returned status code: 0x%08x \n", retStatus);
+        printf("[KVS Master] readFile(): operation returned status code: 0x%08" PRIx32 "\n", retStatus);
         goto CleanUp;
     }
 
@@ -97,9 +98,16 @@ PVOID sendVideoPackets(PVOID args)
 
     CHK(pFileSrcContext != NULL, STATUS_MEDIA_NULL_ARG);
 
+#if USE_H264_ENC
+    // I have seen esp_h264 encoded frames to be about 16KB in some cases
+    const int FRAME_BUF_SIZE = 20 * 1024;
+#else
+    const int FRAME_BUF_SIZE = 7 * 1024;
+#endif
+
     pCodecStreamConf = &pFileSrcContext->codecConfiguration.videoStream;
-    pCodecStreamConf->pFrameBuffer = (PBYTE) MEMALLOC(7*1024);
-    pCodecStreamConf->frameBufferSize = 7*1024;
+    pCodecStreamConf->pFrameBuffer = (PBYTE) MEMALLOC(FRAME_BUF_SIZE);
+    pCodecStreamConf->frameBufferSize = FRAME_BUF_SIZE;
     frame.presentationTs = 0;
     startTime = GETTIME();
     lastFrameTime = startTime;
@@ -114,7 +122,7 @@ PVOID sendVideoPackets(PVOID args)
         frame.size = frameSize;
 #else
         fileIndex = fileIndex % NUMBER_OF_H264_FRAME_FILES + 1;
-        snprintf(filePath, MAX_PATH_LEN, "/sdcard/h264SampleFrames/frame-%04d.h264", fileIndex);
+        snprintf(filePath, MAX_PATH_LEN, "/sdcard/h264SampleFrames/frame-%04" PRIu32 ".h264", fileIndex);
 
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_VIDEO_SINK);
 
@@ -182,7 +190,7 @@ PVOID sendAudioPackets(PVOID args)
 
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
         fileIndex = fileIndex % NUMBER_OF_OPUS_FRAME_FILES + 1;
-        snprintf(filePath, MAX_PATH_LEN, "/sdcard/opusSampleFrames/sample-%03d.opus", fileIndex);
+        snprintf(filePath, MAX_PATH_LEN, "/sdcard/opusSampleFrames/sample-%03" PRIu32 ".opus", fileIndex);
 
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_AUDIO_SINK);
         // Re-alloc if needed
