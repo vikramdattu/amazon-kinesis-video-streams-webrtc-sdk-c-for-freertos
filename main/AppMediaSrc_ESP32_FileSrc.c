@@ -19,8 +19,11 @@
 #include <stdbool.h>
 #include <inttypes.h>
 
-#define NUMBER_OF_H264_FRAME_FILES               1500
+#define NUMBER_OF_H264_FRAME_FILES               255
 #define NUMBER_OF_OPUS_FRAME_FILES               618
+
+// FIXME... In my experiments, DEFAULT_FPS_VALUE is not translated optimally and ends up
+// hampering the data transfer. (Increasing this value is adding to througput!!)
 #define DEFAULT_FPS_VALUE                        25
 
 #define FILESRC_AUDIO_FRAME_DURATION (20 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND)
@@ -80,6 +83,7 @@ CleanUp:
     return retStatus;
 }
 
+// TODO: Move configs to a common config file
 #if CONFIG_IDF_TARGET_ESP32S3
 #define USE_H264_ENC    1
 #define USE_OPUS_ENC    1
@@ -88,6 +92,8 @@ CleanUp:
 #include <freertos/freeRTOS.h>
 #include <freertos/task.h>
 #endif
+
+// #define USE_SPIFFS_STORAGE  1
 
 PVOID sendVideoPackets(PVOID args)
 {
@@ -147,14 +153,28 @@ PVOID sendVideoPackets(PVOID args)
         frame.size = frameSize;
 #endif
 #else
-        fileIndex = fileIndex % NUMBER_OF_H264_FRAME_FILES + 1;
+        fileIndex = fileIndex + 1;
+        if (fileIndex > NUMBER_OF_H264_FRAME_FILES) {
+            fileIndex = 1;
+        }
+
+#if USE_SPIFFS_STORAGE
+        snprintf(filePath, MAX_PATH_LEN, "/spiffs/samples/frame-%04" PRIu32 ".h264", fileIndex);
+#else
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/h264SampleFrames/frame-%04" PRIu32 ".h264", fileIndex);
+#endif
 
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_VIDEO_SINK);
 
         // Re-alloc if needed
         if (frameSize > pCodecStreamConf->frameBufferSize) {
-            CHK((pCodecStreamConf->pFrameBuffer = (UINT8*) MEMREALLOC(pCodecStreamConf->pFrameBuffer, frameSize)) != NULL, STATUS_MEDIA_NOT_ENOUGH_MEMORY);
+            pCodecStreamConf->pFrameBuffer = (UINT8*) MEMREALLOC(pCodecStreamConf->pFrameBuffer, frameSize);
+            if (pCodecStreamConf->pFrameBuffer == NULL) {
+                printf("Memory allocation failed for frameSize %d line %d, fileIndex %d\n",
+                       (int) frameSize, __LINE__, (int) fileIndex);
+                print_mem_stats();
+            }
+            CHK(pCodecStreamConf->pFrameBuffer != NULL, STATUS_MEDIA_NOT_ENOUGH_MEMORY);
             pCodecStreamConf->frameBufferSize = frameSize;
         }
 
@@ -240,7 +260,13 @@ PVOID sendAudioPackets(PVOID args)
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_AUDIO_SINK);
         // Re-alloc if needed
         if (frameSize > pCodecStreamConf->frameBufferSize) {
-            CHK((pCodecStreamConf->pFrameBuffer = (UINT8*) MEMREALLOC(pCodecStreamConf->pFrameBuffer, frameSize)) != NULL, STATUS_MEDIA_NOT_ENOUGH_MEMORY);
+            pCodecStreamConf->pFrameBuffer = (UINT8*) MEMREALLOC(pCodecStreamConf->pFrameBuffer, frameSize);
+            if (pCodecStreamConf->pFrameBuffer == NULL) {
+                printf("Memory allocation failed for frameSize %d line %d, fileIndex %d\n",
+                       (int) frameSize, __LINE__, (int) fileIndex);
+                print_mem_stats();
+            }
+            CHK(pCodecStreamConf->pFrameBuffer != NULL, STATUS_MEDIA_NOT_ENOUGH_MEMORY);
             pCodecStreamConf->frameBufferSize = frameSize;
         }
         frame.flags = FRAME_FLAG_KEY_FRAME;

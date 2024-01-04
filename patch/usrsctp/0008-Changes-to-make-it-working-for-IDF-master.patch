@@ -1,0 +1,273 @@
+From a0959b3f9a36c7c82c2ef3e1ccea97d28e95b8ed Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 4 Jan 2024 18:19:04 +0530
+Subject: [PATCH] Changes to make it working for IDF master
+
+---
+ usrsctplib/netinet/sctp_asconf.c   |  4 ++-
+ usrsctplib/netinet/sctp_bsd_addr.c |  4 +--
+ usrsctplib/netinet/sctp_indata.c   | 41 +++++++++++++++---------------
+ usrsctplib/netinet/sctp_output.c   |  4 ++-
+ usrsctplib/netinet/sctp_sha1.c     |  6 ++---
+ 5 files changed, 32 insertions(+), 27 deletions(-)
+
+diff --git a/usrsctplib/netinet/sctp_asconf.c b/usrsctplib/netinet/sctp_asconf.c
+index 81e2acf..8848b7a 100755
+--- a/usrsctplib/netinet/sctp_asconf.c
++++ b/usrsctplib/netinet/sctp_asconf.c
+@@ -47,6 +47,8 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_asconf.c 363194 2020-07-14 20:32:50Z t
+ #include <netinet/sctp_asconf.h>
+ #include <netinet/sctp_timer.h>
+ 
++#include <inttypes.h>
++
+ /*
+  * debug flags:
+  * SCTP_DEBUG_ASCONF1: protocol info, general info and errors
+@@ -1739,7 +1741,7 @@ sctp_handle_asconf_ack(struct mbuf *m, int offset,
+ 		char msg[SCTP_DIAG_INFO_LEN];
+ 
+ 		SCTPDBG(SCTP_DEBUG_ASCONF1, "handle_asconf_ack: got unexpected next serial number! Aborting asoc!\n");
+-		SCTP_SNPRINTF(msg, sizeof(msg), "Never sent serial number %8.8x", serial_num);
++		SCTP_SNPRINTF(msg, sizeof(msg), "Never sent serial number %8.8" PRIx32, serial_num);
+ 		op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 		sctp_abort_an_association(stcb->sctp_ep, stcb, op_err, SCTP_SO_NOT_LOCKED);
+ 		*abort_no_unlock = 1;
+diff --git a/usrsctplib/netinet/sctp_bsd_addr.c b/usrsctplib/netinet/sctp_bsd_addr.c
+index ec900eb..2eebea0 100755
+--- a/usrsctplib/netinet/sctp_bsd_addr.c
++++ b/usrsctplib/netinet/sctp_bsd_addr.c
+@@ -443,8 +443,8 @@ sctp_init_ifns_for_vrf(int vrfid)
+ 				in_addr->sa_family = AF_INET;
+ 				memcpy(&((struct sockaddr_in *)in_addr)->sin_addr, &tmp_if->ip_addr.u_addr, sizeof(uint32_t) );
+ 			}else{
+-				in_addr->sa_family = AF_INET6;
+-				memcpy(&((struct sockaddr_in6 *)in_addr)->sin6_addr, &tmp_if->ip_addr.u_addr, sizeof(uint32_t)*4);
++				// in_addr->sa_family = AF_INET6;
++				// memcpy(&((struct sockaddr_in6 *)in_addr)->sin6_addr, &tmp_if->ip_addr.u_addr, sizeof(uint32_t)*4);
+ 			}
+ #if !defined(INET)
+ 			if (in_addr->sa_family != AF_INET6) {
+diff --git a/usrsctplib/netinet/sctp_indata.c b/usrsctplib/netinet/sctp_indata.c
+index 08cc625..f22249d 100755
+--- a/usrsctplib/netinet/sctp_indata.c
++++ b/usrsctplib/netinet/sctp_indata.c
+@@ -58,6 +58,7 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_indata.c 363076 2020-07-10 11:15:10Z t
+ #if defined(__FreeBSD__) && !defined(__Userspace__)
+ #include <netinet/sctp_lock_bsd.h>
+ #endif
++#include <inttypes.h>
+ /*
+  * NOTES: On the outbound side of things I need to check the sack timer to
+  * see if I should generate a sack into the chunk queue (if I have data to
+@@ -451,7 +452,7 @@ sctp_abort_in_reasm(struct sctp_tcb *stcb,
+ 
+ 	if (stcb->asoc.idata_supported) {
+ 		SCTP_SNPRINTF(msg, sizeof(msg),
+-		              "Reass %x,CF:%x,TSN=%8.8x,SID=%4.4x,FSN=%8.8x,MID:%8.8x",
++		              "Reass %d,CF:%" PRIx32 ",TSN=%8.8" PRIx32 ",SID=%4.4" PRIx16 ",FSN=%8.8" PRIx32 ",MID:%8.8" PRIx32 "",
+ 		              opspot,
+ 		              control->fsn_included,
+ 		              chk->rec.data.tsn,
+@@ -459,7 +460,7 @@ sctp_abort_in_reasm(struct sctp_tcb *stcb,
+ 		              chk->rec.data.fsn, chk->rec.data.mid);
+ 	} else {
+ 		SCTP_SNPRINTF(msg, sizeof(msg),
+-		              "Reass %x,CI:%x,TSN=%8.8x,SID=%4.4x,FSN=%4.4x,SSN:%4.4x",
++		              "Reass %d,CI:%" PRIx32 ",TSN=%8.8" PRIx32 ",SID=%4.4" PRIx16 ",FSN=%4.4" PRIx32 ",SSN:%4.4" PRIx16 "",
+ 		              opspot,
+ 		              control->fsn_included,
+ 		              chk->rec.data.tsn,
+@@ -548,11 +549,11 @@ sctp_queue_data_to_stream(struct sctp_tcb *stcb,
+ 		 */
+ 		TAILQ_INSERT_HEAD(&strm->inqueue, control, next_instrm);
+ 		if (asoc->idata_supported) {
+-			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered MID=%8.8x, got TSN=%8.8x, SID=%4.4x, MID=%8.8x",
++			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered MID=%8.8" PRIx32 ", got TSN=%8.8" PRIx32 ", SID=%4.4" PRIx16 ", MID=%8.8" PRIx32 "",
+ 			              strm->last_mid_delivered, control->sinfo_tsn,
+ 			              control->sinfo_stream, control->mid);
+ 		} else {
+-			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered SSN=%4.4x, got TSN=%8.8x, SID=%4.4x, SSN=%4.4x",
++			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered SSN=%4.4" PRIx16 ", got TSN=%8.8" PRIx32 ", SID=%4.4" PRIx16 ", SSN=%4.4" PRIx16 "",
+ 			              (uint16_t)strm->last_mid_delivered,
+ 			              control->sinfo_tsn,
+ 			              control->sinfo_stream,
+@@ -664,7 +665,7 @@ sctp_queue_data_to_stream(struct sctp_tcb *stcb,
+ 		 */
+ 		if (sctp_place_control_in_stream(strm, asoc, control)) {
+ 			SCTP_SNPRINTF(msg, sizeof(msg),
+-			              "Queue to str MID: %u duplicate", control->mid);
++			              "Queue to str MID: %" PRIu32 " duplicate", control->mid);
+ 			sctp_clean_up_control(stcb, control);
+ 			op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 			stcb->sctp_ep->last_abort_code = SCTP_FROM_SCTP_INDATA + SCTP_LOC_3;
+@@ -1883,7 +1884,7 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
+ 		 * XXX: This can happen in case of a wrap around.
+ 		 *      Ignore is for now.
+ 		 */
+-		SCTP_SNPRINTF(msg, sizeof(msg), "FSN zero for MID=%8.8x, but flags=%2.2x", mid, chk_flags);
++		SCTP_SNPRINTF(msg, sizeof(msg), "FSN zero for MID=%8.8" PRIx32 ", but flags=%2.2" PRIx8 "", mid, chk_flags);
+ 		goto err_out;
+ 	}
+ 	control = sctp_find_reasm_entry(&asoc->strmin[sid], mid, ordered, asoc->idata_supported);
+@@ -1894,7 +1895,7 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
+ 		if (control != NULL) {
+ 			/* We found something, does it belong? */
+ 			if (ordered && (mid != control->mid)) {
+-				SCTP_SNPRINTF(msg, sizeof(msg), "Reassembly problem (MID=%8.8x)", mid);
++				SCTP_SNPRINTF(msg, sizeof(msg), "Reassembly problem (MID=%8.8" PRIx32 ")", mid);
+ 			err_out:
+ 				op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 				stcb->sctp_ep->last_abort_code = SCTP_FROM_SCTP_INDATA + SCTP_LOC_16;
+@@ -1905,14 +1906,14 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
+ 			if (ordered && ((control->sinfo_flags >> 8) & SCTP_DATA_UNORDERED)) {
+ 				/* We can't have a switched order with an unordered chunk */
+ 				SCTP_SNPRINTF(msg, sizeof(msg),
+-				              "All fragments of a user message must be ordered or unordered (TSN=%8.8x)",
++				              "All fragments of a user message must be ordered or unordered (TSN=%8.8" PRIx32 ")",
+ 				              tsn);
+ 				goto err_out;
+ 			}
+ 			if (!ordered && (((control->sinfo_flags >> 8) & SCTP_DATA_UNORDERED) == 0)) {
+ 				/* We can't have a switched unordered with a ordered chunk */
+ 				SCTP_SNPRINTF(msg, sizeof(msg),
+-				             "All fragments of a user message must be ordered or unordered (TSN=%8.8x)",
++				             "All fragments of a user message must be ordered or unordered (TSN=%8.8" PRIx32 ")",
+ 				             tsn);
+ 				goto err_out;
+ 			}
+@@ -1925,15 +1926,15 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
+ 		 */
+ 		if (control != NULL) {
+ 			if (ordered || asoc->idata_supported) {
+-				SCTPDBG(SCTP_DEBUG_XXX, "chunk_flags: 0x%x dup detected on MID: %u\n",
++				SCTPDBG(SCTP_DEBUG_XXX, "chunk_flags: 0x%" PRIx8 " dup detected on MID: %" PRIu32 "\n",
+ 					chk_flags, mid);
+-				SCTP_SNPRINTF(msg, sizeof(msg), "Duplicate MID=%8.8x detected.", mid);
++				SCTP_SNPRINTF(msg, sizeof(msg), "Duplicate MID=%8.8" PRIx32 " detected.", mid);
+ 				goto err_out;
+ 			} else {
+ 				if ((tsn == control->fsn_included + 1) &&
+ 				    (control->end_added == 0)) {
+ 					SCTP_SNPRINTF(msg, sizeof(msg),
+-					              "Illegal message sequence, missing end for MID: %8.8x",
++					              "Illegal message sequence, missing end for MID: %8.8" PRIx32 "",
+ 					              control->fsn_included);
+ 					goto err_out;
+ 				} else {
+@@ -2031,13 +2032,13 @@ sctp_process_a_data_chunk(struct sctp_tcb *stcb, struct sctp_association *asoc,
+ 			mid, asoc->strmin[sid].last_mid_delivered);
+ 
+ 		if (asoc->idata_supported) {
+-			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered MID=%8.8x, got TSN=%8.8x, SID=%4.4x, MID=%8.8x",
++			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered MID=%8.8" PRIx32 ", got TSN=%8.8" PRIx32 ", SID=%4.4" PRIx16 ", MID=%8.8" PRIx32 "",
+ 			              asoc->strmin[sid].last_mid_delivered,
+ 			              tsn,
+ 			              sid,
+ 			              mid);
+ 		} else {
+-			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered SSN=%4.4x, got TSN=%8.8x, SID=%4.4x, SSN=%4.4x",
++			SCTP_SNPRINTF(msg, sizeof(msg), "Delivered SSN=%4.4" PRIx16 ", got TSN=%8.8" PRIx32 ", SID=%4.4" PRIx16 ", SSN=%4.4" PRIx16 "",
+ 			              (uint16_t)asoc->strmin[sid].last_mid_delivered,
+ 			              tsn,
+ 			              sid,
+@@ -2871,7 +2872,7 @@ sctp_process_data(struct mbuf **mm, int iphlen, int *offset, int length,
+ 				struct mbuf *op_err;
+ 				char msg[SCTP_DIAG_INFO_LEN];
+ 
+-				SCTP_SNPRINTF(msg, sizeof(msg), "DATA chunk followed by chunk of type %2.2x",
++				SCTP_SNPRINTF(msg, sizeof(msg), "DATA chunk followed by chunk of type %2.2" PRIx8 "",
+ 				              ch->chunk_type);
+ 				op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 				sctp_abort_an_association(inp, stcb, op_err, SCTP_SO_NOT_LOCKED);
+@@ -4022,7 +4023,7 @@ sctp_express_handle_sack(struct sctp_tcb *stcb, uint32_t cumack,
+ 		*abort_now = 1;
+ 		/* XXX */
+ 		SCTP_SNPRINTF(msg, sizeof(msg),
+-		              "Cum ack %8.8x greater or equal than TSN %8.8x",
++		              "Cum ack %8.8" PRIx32 " greater or equal than TSN %8.8" PRIx32 "",
+ 		              cumack, send_s);
+ 		op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 		stcb->sctp_ep->last_abort_code = SCTP_FROM_SCTP_INDATA + SCTP_LOC_24;
+@@ -4573,17 +4574,17 @@ sctp_handle_sack(struct mbuf *m, int offset_seg, int offset_dup,
+ 		 * no way, we have not even sent this TSN out yet.
+ 		 * Peer is hopelessly messed up with us.
+ 		 */
+-		SCTP_PRINTF("NEW cum_ack:%x send_s:%x is smaller or equal\n",
++		SCTP_PRINTF("NEW cum_ack:%" PRIx32 " send_s:%" PRIx32 " is smaller or equal\n",
+ 			    cum_ack, send_s);
+ 		if (tp1) {
+-			SCTP_PRINTF("Got send_s from tsn:%x + 1 of tp1: %p\n",
++			SCTP_PRINTF("Got send_s from tsn:%" PRIx32 " + 1 of tp1: %p\n",
+ 				    tp1->rec.data.tsn, (void *)tp1);
+ 		}
+ 	hopeless_peer:
+ 		*abort_now = 1;
+ 		/* XXX */
+ 		SCTP_SNPRINTF(msg, sizeof(msg),
+-		              "Cum ack %8.8x greater or equal than TSN %8.8x",
++		              "Cum ack %8.8" PRIx32 " greater or equal than TSN %8.8" PRIx32 "",
+ 		              cum_ack, send_s);
+ 		op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 		stcb->sctp_ep->last_abort_code = SCTP_FROM_SCTP_INDATA + SCTP_LOC_28;
+@@ -5632,7 +5633,7 @@ sctp_handle_forward_tsn(struct sctp_tcb *stcb,
+ 			 */
+ 			*abort_flag = 1;
+ 			SCTP_SNPRINTF(msg, sizeof(msg),
+-			              "New cum ack %8.8x too high, highest TSN %8.8x",
++			              "New cum ack %8.8" PRIx32 " too high, highest TSN %8.8" PRIx32 "",
+ 			              new_cum_tsn, asoc->highest_tsn_inside_map);
+ 			op_err = sctp_generate_cause(SCTP_CAUSE_PROTOCOL_VIOLATION, msg);
+ 			stcb->sctp_ep->last_abort_code = SCTP_FROM_SCTP_INDATA + SCTP_LOC_36;
+diff --git a/usrsctplib/netinet/sctp_output.c b/usrsctplib/netinet/sctp_output.c
+index 7004506..944a82c 100755
+--- a/usrsctplib/netinet/sctp_output.c
++++ b/usrsctplib/netinet/sctp_output.c
+@@ -63,6 +63,8 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_output.c 362178 2020-06-14 16:05:08Z t
+ #define __FAVOR_BSD    /* (on Ubuntu at least) enables UDP header field names like BSD in RFC 768 */
+ #endif
+ 
++#include <inttypes.h>
++
+ #include <netinet/sctp_udp_port.h>
+ 
+ #if !defined(__Userspace__)
+@@ -10148,7 +10150,7 @@ sctp_chunk_retransmission(struct sctp_inpcb *inp,
+ 			struct mbuf *op_err;
+ 			char msg[SCTP_DIAG_INFO_LEN];
+ 
+-			SCTP_SNPRINTF(msg, sizeof(msg), "TSN %8.8x retransmitted %d times, giving up",
++			SCTP_SNPRINTF(msg, sizeof(msg), "TSN %8.8" PRIx32 " retransmitted %" PRIu16 " times, giving up",
+ 			              chk->rec.data.tsn, chk->snd_count);
+ 			op_err = sctp_generate_cause(SCTP_BASE_SYSCTL(sctp_diag_info_code),
+ 			                             msg);
+diff --git a/usrsctplib/netinet/sctp_sha1.c b/usrsctplib/netinet/sctp_sha1.c
+index 8472c3a..dcc0a5d 100755
+--- a/usrsctplib/netinet/sctp_sha1.c
++++ b/usrsctplib/netinet/sctp_sha1.c
+@@ -85,19 +85,19 @@ void
+ sctp_sha1_init(struct sctp_sha1_context *ctx)
+ {
+ 	mbedtls_sha1_init(&ctx->sha1_ctx);
+-	mbedtls_sha1_starts_ret(&ctx->sha1_ctx);
++	mbedtls_sha1_starts(&ctx->sha1_ctx);
+ }
+ 
+ void
+ sctp_sha1_update(struct sctp_sha1_context *ctx, const unsigned char *ptr, unsigned int siz)
+ {
+-	mbedtls_sha1_update_ret(&ctx->sha1_ctx, ptr, siz);
++	mbedtls_sha1_update(&ctx->sha1_ctx, ptr, siz);
+ }
+ 
+ void
+ sctp_sha1_final(unsigned char *digest, struct sctp_sha1_context *ctx)
+ {
+-	mbedtls_sha1_finish_ret(&ctx->sha1_ctx, digest);
++	mbedtls_sha1_finish(&ctx->sha1_ctx, digest);
+ }
+ #else
+ 
+-- 
+2.39.3 (Apple Git-145)
+

@@ -597,6 +597,7 @@ static STATUS app_common_initializePeerConnection(PAppConfiguration pAppConfigur
     }
 
     curTime = GETTIME();
+    print_mem_stats();
     CHK_STATUS((pc_create(pConfiguration, ppRtcPeerConnection)));
     DLOGD("time taken to create peer connection %" PRIu64 " ms", (GETTIME() - curTime) / HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
 

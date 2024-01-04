@@ -42,6 +42,13 @@
 #include "esp_sntp.h"
 #endif
 
+// sdcard and hosted both cannot work on p4. Please use spiffs
+// #define USE_SPIFFS_STORAGE  1
+
+#if USE_SPIFFS_STORAGE
+#include "esp_spiffs.h"
+#endif
+
 /* The examples use WiFi configuration that you can set via project configuration menu
 
    If you'd rather not, just change the below entries to strings with
@@ -177,12 +184,11 @@ void wifi_init_sta(void)
     vEventGroupDelete(s_wifi_event_group);
 }
 
-
-
 void time_sync_notification_cb(struct timeval *tv)
 {
     ESP_LOGI(TAG, "Notification of a time synchronization event");
 }
+
 static void initialize_sntp(void)
 {
     ESP_LOGI(TAG, "Initializing SNTP");
@@ -201,8 +207,12 @@ static void initialize_sntp(void)
 #endif
 }
 
-esp_err_t sdcard_init(void)
+static esp_err_t sdcard_init(void)
 {
+#if USE_SPIFFS_STORAGE
+    ESP_LOGE(TAG, "Refusing to initialize sdcard. Set to use spiffs.");
+    return ESP_FAIL;
+#endif
     // Options for mounting the filesystem.
     // If format_if_mount_failed is set to true, SD card will be partitioned and
     // formatted in case when mounting fails.
@@ -274,6 +284,68 @@ esp_err_t sdcard_init(void)
     return ESP_OK;
 }
 
+#if USE_SPIFFS_STORAGE
+static esp_err_t spiffs_init(void)
+{
+    ESP_LOGI(TAG, "Initializing SPIFFS");
+
+    esp_vfs_spiffs_conf_t conf = {
+      .base_path = "/spiffs",
+      .partition_label = NULL,
+      .max_files = 5,
+      .format_if_mount_failed = false
+    };
+
+    // Use settings defined above to initialize and mount SPIFFS filesystem.
+    // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format spiffs filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+        }
+        return ret;
+    }
+
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(NULL, &total, &used);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+    }
+
+    return ret;
+}
+#endif
+
+static esp_err_t storage_init()
+{
+#if USE_SPIFFS_STORAGE
+    return spiffs_init();
+#else
+    return sdcard_init();
+#endif
+}
+
+static esp_err_t storage_deinit()
+{
+#if USE_SPIFFS_STORAGE
+    // All done, unmount partition and disable SPIFFS
+    esp_vfs_spiffs_unregister(NULL);
+    ESP_LOGI(TAG, "SPIFFS unmounted");
+#else
+    // All done, unmount partition and disable SDMMC or SPI peripheral
+    esp_vfs_fat_sdmmc_unmount();
+    ESP_LOGI(TAG, "Card unmounted");
+#endif
+    return ESP_OK;
+}
+
 void app_main(void)
 {
     //Initialize NVS
@@ -290,7 +362,7 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 
-    if (sdcard_init() == ESP_FAIL) {
+    if (storage_init() == ESP_FAIL) {
         return;
     }
 
@@ -336,8 +408,5 @@ void app_main(void)
     WebRTCAppMain(&gAppMediaSrc);
 
     print_mem_stats();
-
-    // All done, unmount partition and disable SDMMC or SPI peripheral
-    esp_vfs_fat_sdmmc_unmount();
-    ESP_LOGI(TAG, "Card unmounted");
+    storage_deinit();
 }

@@ -1,0 +1,174 @@
+From e227178229f327e0915ae54f71ff37186b8a3b21 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 4 Jan 2024 18:18:21 +0530
+Subject: [PATCH] Changes to make this working for IDF master
+
+---
+ crypto/cipher/aes_gcm_mbedtls.c |  3 ++-
+ crypto/cipher/aes_icm_mbedtls.c |  2 ++
+ crypto/kernel/crypto_kernel.c   | 15 +++++++++++++++
+ include/srtp.h                  |  2 +-
+ srtp/srtp.c                     |  2 ++
+ 5 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/cipher/aes_gcm_mbedtls.c b/crypto/cipher/aes_gcm_mbedtls.c
+index c713928..92fd661 100644
+--- a/crypto/cipher/aes_gcm_mbedtls.c
++++ b/crypto/cipher/aes_gcm_mbedtls.c
+@@ -146,6 +146,7 @@ static srtp_err_status_t srtp_aes_gcm_mbedtls_alloc(srtp_cipher_t **c,
+     (*c)->state = gcm;
+ 
+     /* setup cipher attributes */
++#ifdef GCM
+     switch (key_len) {
+     case SRTP_AES_GCM_128_KEY_LEN_WSALT:
+         (*c)->type = &srtp_aes_gcm_128;
+@@ -160,7 +161,7 @@ static srtp_err_status_t srtp_aes_gcm_mbedtls_alloc(srtp_cipher_t **c,
+         gcm->tag_len = tlen;
+         break;
+     }
+-
++#endif
+     /* set key size        */
+     (*c)->key_len = key_len;
+ 
+diff --git a/crypto/cipher/aes_icm_mbedtls.c b/crypto/cipher/aes_icm_mbedtls.c
+index 8b730d3..a66af9b 100644
+--- a/crypto/cipher/aes_icm_mbedtls.c
++++ b/crypto/cipher/aes_icm_mbedtls.c
+@@ -164,11 +164,13 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_alloc(srtp_cipher_t **c,
+         (*c)->type = &srtp_aes_icm_128;
+         icm->key_size = SRTP_AES_128_KEY_LEN;
+         break;
++#ifdef GCM
+     case SRTP_AES_ICM_192_KEY_LEN_WSALT:
+         (*c)->algorithm = SRTP_AES_ICM_192;
+         (*c)->type = &srtp_aes_icm_192;
+         icm->key_size = SRTP_AES_192_KEY_LEN;
+         break;
++#endif
+     case SRTP_AES_ICM_256_KEY_LEN_WSALT:
+         (*c)->algorithm = SRTP_AES_ICM_256;
+         (*c)->type = &srtp_aes_icm_256;
+diff --git a/crypto/kernel/crypto_kernel.c b/crypto/kernel/crypto_kernel.c
+index cba6922..b41854e 100644
+--- a/crypto/kernel/crypto_kernel.c
++++ b/crypto/kernel/crypto_kernel.c
+@@ -84,12 +84,14 @@ srtp_err_status_t srtp_crypto_kernel_init()
+ 
+     /* initialize error reporting system */
+     status = srtp_err_reporting_init();
++    printf("after srtp_err_reporting_init, status %d\n", status);
+     if (status) {
+         return status;
+     }
+ 
+     /* load debug modules */
+     status = srtp_crypto_kernel_load_debug_module(&srtp_mod_crypto_kernel);
++    printf("after srtp_crypto_kernel_load_debug_module, status %d\n", status);
+     if (status) {
+         return status;
+     }
+@@ -113,40 +115,50 @@ srtp_err_status_t srtp_crypto_kernel_init()
+     /* load cipher types */
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_null_cipher,
+                                                  SRTP_NULL_CIPHER);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_aes_icm_128,
+                                                  SRTP_AES_ICM_128);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_aes_icm_256,
+                                                  SRTP_AES_ICM_256);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_debug_module(&srtp_mod_aes_icm);
++    printf("after srtp_crypto_kernel_load_debug_module, status %d\n", status);
+     if (status) {
+         return status;
+     }
+ #ifdef GCM
++#if 0
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_aes_icm_192,
+                                                  SRTP_AES_ICM_192);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
++#endif
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_aes_gcm_128,
+                                                  SRTP_AES_GCM_128);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_cipher_type(&srtp_aes_gcm_256,
+                                                  SRTP_AES_GCM_256);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_debug_module(&srtp_mod_aes_gcm);
++    printf("after srtp_crypto_kernel_load_cipher_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+@@ -154,14 +166,17 @@ srtp_err_status_t srtp_crypto_kernel_init()
+ 
+     /* load auth func types */
+     status = srtp_crypto_kernel_load_auth_type(&srtp_null_auth, SRTP_NULL_AUTH);
++    printf("after srtp_crypto_kernel_load_auth_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_auth_type(&srtp_hmac, SRTP_HMAC_SHA1);
++    printf("after srtp_crypto_kernel_load_auth_type, status %d\n", status);
+     if (status) {
+         return status;
+     }
+     status = srtp_crypto_kernel_load_debug_module(&srtp_mod_hmac);
++    printf("after srtp_crypto_kernel_load_debug_module, status %d\n", status);
+     if (status) {
+         return status;
+     }
+diff --git a/include/srtp.h b/include/srtp.h
+index c86b9ee..3fb8f0c 100644
+--- a/include/srtp.h
++++ b/include/srtp.h
+@@ -624,7 +624,7 @@ srtp_err_status_t srtp_add_stream(srtp_t session, const srtp_policy_t *policy);
+  *    - [other]           otherwise.
+  *
+  */
+-srtp_err_status_t srtp_remove_stream(srtp_t session, unsigned int ssrc);
++srtp_err_status_t srtp_remove_stream(srtp_t session, uint32_t ssrc);
+ 
+ /**
+  * @brief srtp_update() udpates all streams in the session.
+diff --git a/srtp/srtp.c b/srtp/srtp.c
+index eff328f..3177028 100644
+--- a/srtp/srtp.c
++++ b/srtp/srtp.c
+@@ -2727,11 +2727,13 @@ srtp_err_status_t srtp_init()
+ 
+     /* initialize crypto kernel */
+     status = srtp_crypto_kernel_init();
++    printf("after srtp_crypto_kernel_init, status %d\n", status);
+     if (status)
+         return status;
+ 
+     /* load srtp debug module into the kernel */
+     status = srtp_crypto_kernel_load_debug_module(&mod_srtp);
++    printf("after srtp_crypto_kernel_load_debug_module\n");
+     if (status)
+         return status;
+ 
+-- 
+2.39.3 (Apple Git-145)
+

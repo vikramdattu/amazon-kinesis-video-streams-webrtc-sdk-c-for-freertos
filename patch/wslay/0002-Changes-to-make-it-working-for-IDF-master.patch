@@ -1,0 +1,31 @@
+From 3b4afc85d143df3903a4af3f0e9330b14c8482c6 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 4 Jan 2024 18:19:40 +0530
+Subject: [PATCH] Changes to make it working for IDF master
+
+---
+ lib/wslay_net.h | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/lib/wslay_net.h b/lib/wslay_net.h
+index 43aa065..ab2e969 100644
+--- a/lib/wslay_net.h
++++ b/lib/wslay_net.h
+@@ -36,10 +36,10 @@
+ #endif /* HAVE_ARPA_INET_H */
+ 
+ #include <lwip/def.h>
+-#define htons(x) lwip_htons(x)
+-#define ntohs(x) lwip_ntohs(x)
+-#define htonl(x) lwip_htonl(x)
+-#define ntohl(x) lwip_ntohl(x)
++// #define htons(x) lwip_htons(x)
++// #define ntohs(x) lwip_ntohs(x)
++// #define htonl(x) lwip_htonl(x)
++// #define ntohl(x) lwip_ntohl(x)
+ 
+ 
+ #ifdef HAVE_NETINET_IN_H
+-- 
+2.39.3 (Apple Git-145)
+
