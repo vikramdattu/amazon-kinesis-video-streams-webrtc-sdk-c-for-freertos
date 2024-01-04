@@ -93,7 +93,8 @@ CleanUp:
 #include <freertos/task.h>
 #endif
 
-// #define USE_SPIFFS_STORAGE  1
+// sdcard not tested for p4. Please use spiffs
+#define USE_SPIFFS_STORAGE  1
 
 PVOID sendVideoPackets(PVOID args)
 {
