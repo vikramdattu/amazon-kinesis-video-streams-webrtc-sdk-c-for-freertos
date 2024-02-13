@@ -2,10 +2,9 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
-# if(CONFIG_IDF_TARGET_ESP32P4) // is not working... :(
+# if(CONFIG_IDF_TARGET_ESP32P4) # is not working... :(
 set(EXTRA_COMPONENT_DIRS $ENV{IDF_PATH}/examples/system/console/advanced/components
-                         $ENV{IDF_PATH}/examples/common_components/iperf
-                         $ENV{IDF_PATH}/examples/wifi/iperf/components/)
+                         esp32_p4_function_ev_board)
 # endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

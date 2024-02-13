@@ -12,9 +12,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include "allocators.h"
-
 #include "esp_cli.h"
+#include "allocators.h"
+#include "AppMain.h"
 
 static const char *TAG = "[esp_cli]";
 

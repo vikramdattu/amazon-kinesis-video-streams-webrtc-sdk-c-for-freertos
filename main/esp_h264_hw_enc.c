@@ -1,0 +1,204 @@
+/*
+ * SPDX-FileCopyrightText: 2023-2024 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <string.h>
+#include "dirent.h"
+#include <stdio.h>
+#include <errno.h>
+
+#include <esp_log.h>
+
+#include "esp_h264_enc_single_hw.h"
+#include "esp_h264_enc_single.h"
+#include "esp_h264_alloc.h"
+#include "esp_h264_cache.h"
+// #include "esp_h264_check.h"
+
+#include "esp_h264_hw_enc.h"
+
+static void audio_mem_print(const char *tag, int line, const char *func)
+{
+#ifdef CONFIG_SPIRAM_BOOT_INIT
+    ESP_LOGI(tag, "Func:%s, Line:%d, MEM Total:%" PRIu32 " Bytes, SPI:%d Bytes, SPI:%d Bytes\r\n",
+             func, line, esp_get_free_heap_size(), (int) heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (int) heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    ESP_LOGI(tag, "Func:%s, Line:%d, MEM Total:%" PRIu32 " Bytes\r\n", func, line, esp_get_free_heap_size());
+#endif
+}
+
+// #define CPU_TEST
+#ifdef CPU_TEST
+#include "esp_cpu.h"
+#endif
+
+typedef struct {
+    esp_h264_enc_t *enc;
+    data_read_cb_t *data_read_cb;
+    data_write_cb_t *data_write_cb;
+    esp_h264_enc_cfg_t cfg;
+    esp_h264_unenc_frame_t in_frame;
+    esp_h264_enc_frame_t out_frame;
+} enc_data_t;
+
+static enc_data_t enc_data;
+
+esp_err_t esp_h264_hw_enc_process_one_frame()
+{
+    esp_h264_err_t ret = ESP_H264_ERR_OK;
+#ifdef CPU_TEST
+    int index_c = 0;
+    uint32_t start = 0;
+    uint32_t stop = 0;
+    double sum = 0.0;
+    uint32_t frame = 0;
+    while (1) {
+        index_c++;
+        // if (index_c > COLOR_NUM) {
+        if (index_c > 1000) {
+            index_c = 0;
+            break;
+        }
+#else
+    {
+#endif
+        esp_h264_buf_t read_data = {
+            .buffer = enc_data.in_frame.raw_data.buffer,
+            .len = enc_data.in_frame.raw_data.len
+        };
+        if (enc_data.data_read_cb) {
+            enc_data.data_read_cb(NULL, &read_data);
+            enc_data.in_frame.raw_data.buffer = read_data.buffer;
+        }
+
+#ifdef CPU_TEST
+        start = esp_cpu_get_cycle_count();
+#endif
+        ret = esp_h264_enc_process(enc_data.enc, &enc_data.in_frame, &enc_data.out_frame);
+
+#ifdef CPU_TEST
+        stop = esp_cpu_get_cycle_count();
+        frame++;
+        sum += (double)(stop - start) / 400000;
+#endif
+        if (ret != ESP_H264_ERR_OK) {
+            printf("process failed. line %d \n", __LINE__);
+            return ESP_FAIL;
+        }
+        esp_h264_buf_t write_data = {
+            .buffer = enc_data.out_frame.raw_data.buffer,
+            .len = enc_data.out_frame.length
+        };
+
+        if (enc_data.data_write_cb) {
+            esp_h264_cache_check_and_invalidate(enc_data.out_frame.raw_data.buffer, enc_data.out_frame.length);
+            enc_data.data_write_cb(NULL, &write_data);
+        }
+    }
+#ifdef CPU_TEST
+    printf("res %d * %d sum %.4f, frame %d, sum/frame %.4f fps %.4f \n",
+           enc_data.cfg.res.width, enc_data.cfg.res.height, sum, frame, sum / frame, 1000 * frame / sum);
+#endif
+    return ESP_OK;
+}
+
+void esp_h264_destroy_encoder()
+{
+    esp_h264_enc_close(enc_data.enc);
+    esp_h264_enc_del(enc_data.enc);
+    enc_data.enc = NULL;
+
+    if (enc_data.out_frame.raw_data.buffer) {
+        heap_caps_free(enc_data.out_frame.raw_data.buffer);
+        enc_data.out_frame.raw_data.buffer = NULL;
+    }
+}
+
+esp_err_t esp_h264_setup_encoder(h264_enc_user_cfg_t *user_cfg)
+{
+    esp_h264_enc_cfg_t cfg = { 0 };
+    cfg.gop = 5;
+    cfg.fps = 30;
+    cfg.res.width = WIDTH;
+    cfg.res.height = HEIGHT;
+    cfg.rc.bitrate = 1 * 1024 * 1024; //cfg.res.width * cfg.res.height * cfg.fps / 30;
+    cfg.rc.qp_min = 20; // 20
+    cfg.rc.qp_max = 51; // 35
+    cfg.pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY;
+
+    esp_h264_err_t ret = ESP_H264_ERR_OK;
+
+    uint16_t width = ((cfg.res.width + 15) >> 4 << 4);
+    uint16_t height = ((cfg.res.height + 15) >> 4 << 4);
+    audio_mem_print("H264 HW", __LINE__, __func__);
+    enc_data.in_frame.raw_data.len = (width * height + (width * height >> 1));
+
+    enc_data.out_frame.raw_data.len = enc_data.in_frame.raw_data.len;
+    // uint32_t actual_size = 0;
+    // enc_data.out_frame.raw_data.buffer = esp_h264_aligned_calloc(64, 1, enc_data.out_frame.raw_data.len, &actual_size, MALLOC_CAP_SPIRAM);
+    enc_data.out_frame.raw_data.buffer = heap_caps_aligned_calloc(64, 1, enc_data.out_frame.raw_data.len, MALLOC_CAP_SPIRAM);
+
+    if (!enc_data.out_frame.raw_data.buffer) {
+        printf("mem allocation failed.line %d \n", __LINE__);
+        audio_mem_print("H264 HW", __LINE__, __func__);
+        return ESP_FAIL;
+    }
+    esp_h264_cache_check_and_writeback(enc_data.out_frame.raw_data.buffer, enc_data.out_frame.raw_data.len);
+    ret = esp_h264_enc_hw_new(&cfg, &enc_data.enc);
+    if (ret != ESP_H264_ERR_OK) {
+        printf("new failed. line %d \n", __LINE__);
+        esp_h264_destroy_encoder();
+        return ESP_FAIL;
+    }
+
+    ret = esp_h264_enc_open(enc_data.enc);
+    if (ret != ESP_H264_ERR_OK) {
+        esp_h264_destroy_encoder();
+        return ESP_FAIL;
+    }
+
+    enc_data.data_read_cb = user_cfg->read_cb;
+    enc_data.data_write_cb = user_cfg->write_cb;
+    enc_data.cfg = cfg;
+    return ESP_OK;
+}
+
+esp_err_t esp_h264_hw_enc_set_reset_request()
+{
+    enc_data.delay_ms = 0;
+    enc_data.reset_requested = true;
+    return ESP_OK;
+}
+
+#define MIN_BITRTATE_DELTA  (10 * 1024)
+#define MIN_BITRATE         (256 * 1024)
+#define MAX_BITRATE         (3 * 1024 * 1024)
+esp_err_t esp_h264_hw_enc_set_bitrate(uint32_t bitrate)
+{
+    // ESP_LOGI(TAG, "received bitrate suggestion: %d", (int) bitrate);
+    int new_bitrate = (int) bitrate;
+    int curr_bitrate = (int) enc_data.cfg.rc.bitrate;
+
+    if (new_bitrate < MIN_BITRATE) {
+        new_bitrate = MIN_BITRATE;
+    }
+    if (new_bitrate > MAX_BITRATE) {
+        new_bitrate = MAX_BITRATE;
+    }
+    if ((new_bitrate > curr_bitrate + MIN_BITRTATE_DELTA) || (new_bitrate < curr_bitrate - MIN_BITRTATE_DELTA)) {
+        enc_data.cfg.rc.bitrate = new_bitrate;
+        enc_data.reset_requested = true;
+        enc_data.delay_ms = 0;
+        if (new_bitrate < curr_bitrate) {
+            enc_data.delay_ms = 50;
+        }
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}

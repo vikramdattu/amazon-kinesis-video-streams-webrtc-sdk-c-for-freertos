@@ -13,14 +13,22 @@ const char *TAG = "H264FramerGrabber";
 
 #if CONFIG_IDF_TARGET_ESP32S3
 #define OLD_H264_ENCODER 1
+#endif
 
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include <esp_heap_caps.h>
 
+#if CONFIG_IDF_TARGET_ESP32S3
 #if OLD_H264_ENCODER
 #include "esp_h264_enc.h"
 #else
 #include "esp_h264_enc_single_sw.h"
 #include "esp_h264_enc_single.h"
+#endif
+#else
+#include "esp_h264_hw_enc.h"
+extern void esp32p4_frame_grabber_init(void);
+extern esp_h264_buf_t *esp32p4_grab_one_frame();
 #endif
 
 static int frame_count = 0;
@@ -187,7 +195,6 @@ esp_h264_out_buf_t *get_h264_encoded_frame()
     static bool is_first = true;
     if (is_first) {
         app_camera_init();
-
         printf("camera init done\n");
 
         initialize_h264_encoder();
@@ -222,10 +229,22 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
     static bool is_first = true;
     static uint8_t fill_val = 0;
     if (is_first) {
+#if CONFIG_IDF_TARGET_ESP32P4
+        /* TODO: Breaking code... Needs to be fixed to use common code... */
+        esp32p4_frame_grabber_init();
+        esp_h264_buf_t *h264_buffer = esp32p4_grab_one_frame();
+        if (h264_buffer && out_buf) {
+            *frame_len = h264_buffer->len;
+            // encoded frame copy into the target buffer
+            memcpy(out_buf, h264_buffer->buffer, *frame_len);
+        } else {
+            *frame_len = 0;
+        }
+        return;
+#else
         app_camera_init();
-
         printf("camera init done\n");
-
+#endif
         initialize_encoder();
 
         print_mem_stats();

@@ -48,11 +48,17 @@ set(app_srcs    "kvswebrtc_example_main.c"
 set(priv_requires esp_wifi spiffs console)
 set(requires nvs_flash mbedtls lwip fatfs esp_common pthread)
 
+# if(CONFIG_IDF_TARGET_ESP32P4)
+        list(APPEND app_srcs "esp_h264_hw_enc.c" "esp32p4_frame_grabber.c")
+        list(APPEND priv_requires esp32_p4_function_ev_board)
+        list(APPEND requires esp_h264 esp32_p4_function_ev_board)
+# endif()
+
 idf_component_register(SRCS "${app_srcs}"
-                        INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
-                        PRIV_REQUIRES ${priv_requires}
-                        REQUIRES ${requires}
-                        )
+                    INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
+                    PRIV_REQUIRES ${priv_requires}
+                    REQUIRES ${requires}
+                    )
 
 idf_component_get_property(nvs_flash_lib nvs_flash COMPONENT_LIB)
 idf_component_get_property(mbedtls_lib mbedtls COMPONENT_LIB)

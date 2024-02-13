@@ -24,7 +24,7 @@
 
 // FIXME... In my experiments, DEFAULT_FPS_VALUE is not translated optimally and ends up
 // hampering the data transfer. (Increasing this value is adding to througput!!)
-#define DEFAULT_FPS_VALUE                        25
+#define DEFAULT_FPS_VALUE                        30
 
 #define FILESRC_AUDIO_FRAME_DURATION (20 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND)
 #define FILESRC_VIDEO_FRAME_DURATION (HUNDREDS_OF_NANOS_IN_A_SECOND / DEFAULT_FPS_VALUE)
@@ -94,7 +94,8 @@ CleanUp:
 #endif
 
 // sdcard not tested for p4. Please use spiffs
-#define USE_SPIFFS_STORAGE  1
+// #define USE_SPIFFS_STORAGE  1
+
 
 PVOID sendVideoPackets(PVOID args)
 {
@@ -111,7 +112,7 @@ PVOID sendVideoPackets(PVOID args)
 
 #if USE_H264_ENC
     // I have seen esp_h264 encoded frames to be about 16KB in some cases
-    const int FRAME_BUF_SIZE = 20 * 1024;
+    const int FRAME_BUF_SIZE = 50 * 1024;
 #else
     const int FRAME_BUF_SIZE = 7 * 1024;
 #endif
@@ -124,8 +125,7 @@ PVOID sendVideoPackets(PVOID args)
 #endif
     pCodecStreamConf->frameBufferSize = FRAME_BUF_SIZE;
     frame.presentationTs = 0;
-    startTime = GETTIME();
-    lastFrameTime = startTime;
+    lastFrameTime = GETTIME();
 
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
 #if USE_H264_ENC
@@ -205,9 +205,14 @@ PVOID sendVideoPackets(PVOID args)
         // will be paused at least until the given amount, we can assume that there's no too early frame scenario.
         // Also, it's very unlikely to have a delay greater than FILESRC_VIDEO_FRAME_DURATION, so the logic assumes that this is always
         // true for simplicity.
+        startTime = GETTIME();
         elapsed = lastFrameTime - startTime;
-        THREAD_SLEEP(FILESRC_VIDEO_FRAME_DURATION - elapsed % FILESRC_VIDEO_FRAME_DURATION);
-        lastFrameTime = GETTIME();
+        uint32_t to_sleep = 100 * 1000; // sleep for at least 1 ms
+        if (elapsed + to_sleep < FILESRC_VIDEO_FRAME_DURATION) {
+            to_sleep = FILESRC_VIDEO_FRAME_DURATION - (elapsed + to_sleep);
+        }
+        THREAD_SLEEP(to_sleep);
+        lastFrameTime = startTime + to_sleep;
     }
 
 CleanUp:

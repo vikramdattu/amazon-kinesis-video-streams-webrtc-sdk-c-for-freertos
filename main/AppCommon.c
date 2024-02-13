@@ -134,6 +134,7 @@ static STATUS app_common_onSignalingClientStateChanged(UINT64 userData, SIGNALIN
 
     signaling_client_getStateString(state, &pStateStr);
     DLOGI("Signaling client state changed to %d - '%s'", state, pStateStr);
+
     print_mem_stats();
 
     // Return success to continue

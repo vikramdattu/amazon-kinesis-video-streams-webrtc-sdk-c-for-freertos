@@ -45,6 +45,11 @@
 // sdcard and hosted both cannot work on p4. Please use spiffs
 // #define USE_SPIFFS_STORAGE  1
 
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "bsp/esp32_p4_function_ev_board.h"
+#include "H264FrameGrabber.h"
+#endif
+
 #if USE_SPIFFS_STORAGE
 #include "esp_spiffs.h"
 #endif
@@ -207,6 +212,8 @@ static void initialize_sntp(void)
 #endif
 }
 
+static sdmmc_card_t s_card;
+
 static esp_err_t sdcard_init(void)
 {
 #if USE_SPIFFS_STORAGE
@@ -227,6 +234,7 @@ static esp_err_t sdcard_init(void)
     };
 
     ESP_LOGI(TAG, "Initializing SD card");
+    sdmmc_card_t* card;
     ESP_LOGI(TAG, "Using SDMMC peripheral");
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
 
@@ -252,19 +260,47 @@ static esp_err_t sdcard_init(void)
     slot_config.d2 = CONFIG_EXAMPLE_PIN_D2;
     slot_config.d3 = CONFIG_EXAMPLE_PIN_D3;
 #endif  // CONFIG_EXAMPLE_SDMMC_BUS_WIDTH_4
-#endif  // CONFIG_IDF_TARGET_ESP32S3
 
     // Enable internal pullups on enabled pins. The internal pullups
     // are insufficient however, please make sure 10k external pullups are
     // connected on the bus. This is for debug / example purpose only.
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#elif CONFIG_IDF_TARGET_ESP32P4
+    slot_config.width = 4;
+    slot_config.cmd = 44;
+    slot_config.clk = 43;
+    slot_config.d0 = 39;
+    slot_config.d1 = 40;
+    slot_config.d2 = 41;
+    slot_config.d3 = 42;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    host.slot = SDMMC_HOST_SLOT_0;
+
+#if 0
+    sdmmc_host_init_slot(SDMMC_HOST_SLOT_0, &slot_config);
+
+    //host init slave
+    card = &s_card;
+    //wait for at least 5 seconds
+    int retry_times = 5;
+    do {
+        if (sdmmc_card_init(&host, card) == ESP_OK) {
+            break;
+        }
+        ESP_LOGW(TAG, "slave init failed, retry...");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    } while (--retry_times);
+    // TEST_ASSERT_MESSAGE(retry_times != 0, "Initializing slave failed.");
+    return ESP_OK;
+#endif
+
+#endif  // CONFIG_IDF_TARGET_ESP32S3
 
     // Use settings defined above to initialize SD card and mount FAT filesystem.
     // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
     // Please check its source code and implement error recovery when developing
     // production applications.
     ESP_LOGI(TAG, "Mounting filesystem");
-    sdmmc_card_t* card;
     esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
 
     if (ret != ESP_OK) {
@@ -326,7 +362,15 @@ static esp_err_t spiffs_init(void)
 static esp_err_t storage_init()
 {
 #if USE_SPIFFS_STORAGE
-    return spiffs_init();
+    // nothing is initialized for now...
+    uint32_t frame_size = 0;
+    // initialize in advance!
+    for (int cnt = 0; cnt < 10; cnt++) {
+        get_encoded_frame(NULL, &frame_size);
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+    return ESP_OK;
+    // return spiffs_init();
 #else
     return sdcard_init();
 #endif
@@ -359,12 +403,20 @@ void app_main(void)
     esp_cli_start();
     wifi_register_cli();
 
+    print_mem_stats();
+    if (storage_init() == ESP_FAIL) {
+        print_mem_stats();
+        return;
+    }
+
+    print_mem_stats();
+
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 
-    if (storage_init() == ESP_FAIL) {
-        return;
-    }
+    // if (storage_init() == ESP_FAIL) {
+    //     return;
+    // }
 
     // using ntp to acquire the current time.
     {
