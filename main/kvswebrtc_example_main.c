@@ -24,12 +24,20 @@
 #include "driver/sdspi_host.h"
 #include "sdmmc_cmd.h"
 
-#include "esp_sntp.h"
 #include "esp_heap_caps.h"
 #include <inttypes.h>
 
 #include "AppMain.h"
 #include "AppMediaSrc_ESP32_FileSrc.h"
+
+#include "esp_idf_version.h"
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+#include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#else
+#include "esp_sntp.h"
+#endif
 
 /* The examples use WiFi configuration that you can set via project configuration menu
 
@@ -156,6 +164,11 @@ void time_sync_notification_cb(struct timeval *tv)
 static void initialize_sntp(void)
 {
     ESP_LOGI(TAG, "Initializing SNTP");
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(2,
+                               ESP_SNTP_SERVER_LIST("time.windows.com", "pool.ntp.org" ) );
+    esp_netif_sntp_init(&config);
+#else
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "pool.ntp.org");
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
@@ -163,6 +176,7 @@ static void initialize_sntp(void)
     sntp_set_sync_mode(SNTP_SYNC_MODE_SMOOTH);
 #endif
     sntp_init();
+#endif
 }
 
 esp_err_t sdcard_init(void)
@@ -260,16 +274,18 @@ void app_main(void)
         initialize_sntp();
 
         // wait for time to be set
-        time_t now = 0;
-        struct tm timeinfo = { 0 };
         int retry = 0;
         const int retry_count = 10;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+        while (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(2000)) != ESP_OK && ++retry < retry_count) {
+            ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
+        }
+#else
         while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
             ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
             vTaskDelay(2000 / portTICK_PERIOD_MS);
         }
-        time(&now);
-        localtime_r(&now, &timeinfo);
+#endif
     }
 
     print_mem_stats();
