@@ -30,6 +30,9 @@
 #include "AppMain.h"
 #include "AppMediaSrc_ESP32_FileSrc.h"
 
+#include "esp_cli.h"
+#include "wifi_cli.h"
+
 #include "esp_idf_version.h"
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -93,6 +96,19 @@ char* esp_get_ip(void)
     return wifi_ip;
 }
 
+static bool wifi_is_provisioned(void)
+{
+    wifi_config_t wifi_cfg;
+    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK) {
+        return false;
+    }
+
+    if (strlen((const char *) wifi_cfg.sta.ssid)) {
+        return true;
+    }
+
+    return false;
+}
 
 void wifi_init_sta(void)
 {
@@ -109,14 +125,15 @@ void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
-    wifi_config_t wifi_config = {
+    wifi_config_t wifi_config = {};
+    wifi_config_t new_wifi_config = {
         .sta = {
             .ssid = EXAMPLE_ESP_WIFI_SSID,
             .password = EXAMPLE_ESP_WIFI_PASS,
             /* Setting a password implies station will connect to all security modes including WEP/WPA.
-             * However these modes are deprecated and not advisable to be used. Incase your Access point
-             * doesn't support WPA2, these mode can be enabled by commenting below line */
-	     .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            * However these modes are deprecated and not advisable to be used. Incase your Access point
+            * doesn't support WPA2, these mode can be enabled by commenting below line */
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
 
             .pmf_cfg = {
                 .capable = true,
@@ -124,9 +141,13 @@ void wifi_init_sta(void)
             },
         },
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
-    ESP_ERROR_CHECK(esp_wifi_start() );
+
+    if (!wifi_is_provisioned()) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+        ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &new_wifi_config) );
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
 
@@ -140,12 +161,13 @@ void wifi_init_sta(void)
 
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
+    ESP_ERROR_CHECK(esp_wifi_get_config(ESP_IF_WIFI_STA, &wifi_config) );
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
-                 EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+                 wifi_config.sta.ssid, wifi_config.sta.password);
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
-                 EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+                 wifi_config.sta.ssid, wifi_config.sta.password);
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
     }
@@ -261,6 +283,9 @@ void app_main(void)
       ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    esp_cli_start();
+    wifi_register_cli();
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();

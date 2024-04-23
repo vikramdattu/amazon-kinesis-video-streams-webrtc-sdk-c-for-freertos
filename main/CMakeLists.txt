@@ -27,22 +27,30 @@ set(LIBKVSWEBRTC_INCLUDE_DIRS "${LIB_SOURCE_DIR}/${LIBKVSWEBRTC_NAME}/src/includ
 
 set(OPEN_SRC_INCLUDE_DIRS "${LIBKVSWEBRTC_INCLUDE_DIRS}")
 set(APP_INCLUDE_DIRS "./include")
-idf_component_register(SRCS "kvswebrtc_example_main.c"
-                            "AppCommon.c"
-                            "AppCredential.c"
-                            "AppDataChannel.c"
-                            "AppMediaSrc_ESP32_FileSrc.c"
-                            "AppMain.c"
-                            "AppMessageQueue.c"
-                            "AppMetrics.c"
-                            "AppSignaling.c"
-                            "AppWebRTC.c"
-                            "app_camera_esp.c"
-                            "H264FrameGrabber.c"
-                    INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
-                    PRIV_REQUIRES esp_wifi
-                    REQUIRES nvs_flash mbedtls lwip fatfs esp_common pthread
-                    )
+
+set(app_srcs    "kvswebrtc_example_main.c"
+                "AppCommon.c"
+                "AppCredential.c"
+                "AppDataChannel.c"
+                "AppMediaSrc_ESP32_FileSrc.c"
+                "AppMain.c"
+                "AppMessageQueue.c"
+                "AppMetrics.c"
+                "AppSignaling.c"
+                "AppWebRTC.c"
+                "app_camera_esp.c"
+                "esp_cli.c"
+                "wifi_cli.c"
+                "H264FrameGrabber.c")
+
+set(priv_requires esp_wifi spiffs console)
+set(requires nvs_flash mbedtls lwip fatfs esp_common pthread)
+
+idf_component_register(SRCS "${app_srcs}"
+                        INCLUDE_DIRS "." "${OPEN_SRC_INCLUDE_DIRS}" "${APP_INCLUDE_DIRS}"
+                        PRIV_REQUIRES ${priv_requires}
+                        REQUIRES ${requires}
+                        )
 
 idf_component_get_property(nvs_flash_lib nvs_flash COMPONENT_LIB)
 idf_component_get_property(mbedtls_lib mbedtls COMPONENT_LIB)
