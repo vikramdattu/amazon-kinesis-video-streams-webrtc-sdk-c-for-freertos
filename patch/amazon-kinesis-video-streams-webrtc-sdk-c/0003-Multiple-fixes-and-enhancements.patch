@@ -1,0 +1,1101 @@
+From 24c3926f0b1003be4bd8daf6347ca35ef5f3aadb Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Tue, 23 Apr 2024 12:15:58 +0530
+Subject: [PATCH 2/2] Multiple fixes and enhancements
+
+ - Support for MBEDTLS 3.x
+ - Fixed printf format specifier issues: Build for IDF master fix
+ - Added some debugging prints
+ - Added threads with priority option and reworked priorities for some tasks
+ - Fix unsafe list traversal and free
+ - Make RTP re-transmissions optional with a macro
+---
+ CMakeLists.txt                                |   2 +-
+ src/source/PeerConnection/DataChannel.c       |   2 +-
+ src/source/PeerConnection/PeerConnection.c    |  14 +-
+ src/source/PeerConnection/Rtcp.c              |   2 +
+ src/source/PeerConnection/Rtp.c               |   7 +-
+ .../PeerConnection/SessionDescription.c       |  27 ++--
+ src/source/Rtp/Codecs/RtpH264Payloader.c      |   2 +-
+ src/source/api_call/netio.c                   |  26 +++-
+ src/source/api_call/wss_api_rsp.c             |   1 +
+ src/source/credential/aws_signer_v4.c         |  30 +++--
+ src/source/credential/aws_signer_v4.h         |   5 +-
+ src/source/crypto/crypto.h                    |   2 +-
+ src/source/crypto/dtls.h                      |  11 ++
+ src/source/crypto/dtls_mbedtls.c              | 125 +++++++++++++++++-
+ src/source/crypto/tls_mbedtls.c               |   4 +
+ src/source/ice/connection_listener.c          |   7 +
+ src/source/ice/ice_agent.c                    |  15 ++-
+ src/source/net/socket_connection.c            |  10 +-
+ src/source/net/socket_connection.h            |   2 +-
+ src/source/signaling/signaling.c              |   2 +-
+ src/source/signaling/signaling.h              |   6 +-
+ src/source/utils/allocators.c                 |  42 ++++++
+ src/source/utils/allocators.h                 |   4 +
+ src/source/utils/filelogger.c                 |  10 +-
+ src/source/utils/thread.c                     |  14 +-
+ src/source/utils/thread.h                     |   2 +
+ src/source/utils/timer_queue.c                |   3 +-
+ 27 files changed, 314 insertions(+), 63 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2846610e6..0799ccb24 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -362,7 +362,7 @@ if (USE_MBEDTLS)
+ endif()
+ 
+ add_library(kvsWebrtcSignalingClient ${LINKAGE} ${WEBRTC_SIGNALING_CLIENT_SOURCE_FILES})
+-target_compile_options(kvsWebrtcSignalingClient PUBLIC -Wno-format-truncation)
++target_compile_options(kvsWebrtcSignalingClient PUBLIC -Wno-format-truncation -Wno-error=restrict)
+ target_compile_definitions(kvsWebrtcSignalingClient PRIVATE KVS_BUILD_WITH_LWS ${CPRODUCER_COMMON_TLS_OPTION})
+ 
+ target_link_libraries(
+diff --git a/src/source/PeerConnection/DataChannel.c b/src/source/PeerConnection/DataChannel.c
+index 12540cb57..bd165f3fb 100644
+--- a/src/source/PeerConnection/DataChannel.c
++++ b/src/source/PeerConnection/DataChannel.c
+@@ -63,7 +63,7 @@ STATUS data_channel_create(PRtcPeerConnection pPeerConnection, PCHAR pDataChanne
+         NULLABLE_SET_EMPTY(pKvsDataChannel->rtcDataChannelInit.maxRetransmits);
+     }
+ 
+-    STRNCPY(pKvsDataChannel->rtcDataChannelDiagnostics.label, pKvsDataChannel->dataChannel.name, STRLEN(pKvsDataChannel->dataChannel.name));
++    strcpy(pKvsDataChannel->rtcDataChannelDiagnostics.label, pKvsDataChannel->dataChannel.name);
+     pKvsDataChannel->rtcDataChannelDiagnostics.state = RTC_DATA_CHANNEL_STATE_CONNECTING;
+ 
+     CHK_STATUS(hash_table_getCount(pKvsPeerConnection->pDataChannels, &channelId));
+diff --git a/src/source/PeerConnection/PeerConnection.c b/src/source/PeerConnection/PeerConnection.c
+index 7f05e6a65..483b7cdf4 100644
+--- a/src/source/PeerConnection/PeerConnection.c
++++ b/src/source/PeerConnection/PeerConnection.c
+@@ -1463,19 +1463,31 @@ STATUS pc_initWebRtc(VOID)
+ 
+ #ifdef ENABLE_STREAMING
+     //#TBD.
+-    CHK(srtp_init() == srtp_err_status_ok, STATUS_SRTP_INIT_FAILED);
++    srtp_err_status_t srtp_status = srtp_init();
++    printf("after srtp_init... status %d\n", srtp_status);
++    print_mem_stats();
++    CHK(srtp_status == srtp_err_status_ok, STATUS_SRTP_INIT_FAILED);
+ #endif
+ 
+     // init endianness handling
+     endianness_initialize();
+ 
++    printf("before krypto_init...\n");
++    print_mem_stats();
++
+     KVS_CRYPTO_INIT();
+ 
++    printf("after krypto_init...\n");
++    print_mem_stats();
++
+ #ifdef ENABLE_DATA_CHANNEL
+     CHK_STATUS(sctp_session_init());
++    printf("after sctp_session_init...\n");
++    print_mem_stats();
+ #endif
+ 
+     ATOMIC_STORE_BOOL(&gKvsWebRtcInitialized, TRUE);
++    printf("after success check done...\n");
+ 
+ CleanUp:
+ 
+diff --git a/src/source/PeerConnection/Rtcp.c b/src/source/PeerConnection/Rtcp.c
+index c557b73c2..c80f055fd 100644
+--- a/src/source/PeerConnection/Rtcp.c
++++ b/src/source/PeerConnection/Rtcp.c
+@@ -225,7 +225,9 @@ STATUS rtcp_onInboundPacket(PKvsPeerConnection pKvsPeerConnection, PBYTE pBuff,
+                 break;
+             case RTCP_PACKET_TYPE_GENERIC_RTP_FEEDBACK:
+                 if (rtcpPacket.header.receptionReportCount == RTCP_FEEDBACK_MESSAGE_TYPE_NACK) {
++#ifndef DISABLE_RTP_RETRANSMISSIONS
+                     CHK_STATUS(retransmitter_resendPacketOnNack(&rtcpPacket, pKvsPeerConnection));
++#endif
+                 } else {
+                     DLOGW("unhandled RTCP_PACKET_TYPE_GENERIC_RTP_FEEDBACK %d", rtcpPacket.header.receptionReportCount);
+                 }
+diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
+index 631d83032..32fa77f28 100644
+--- a/src/source/PeerConnection/Rtp.c
++++ b/src/source/PeerConnection/Rtp.c
+@@ -319,13 +319,13 @@ STATUS rtp_writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+         allocSize = packetLen + SRTP_AUTH_TAG_OVERHEAD;
+         CHK(NULL != (rawPacket = (PBYTE) MEMALLOC(allocSize)), STATUS_NOT_ENOUGH_MEMORY);
+         CHK_STATUS(rtp_packet_createBytesFromPacket(pRtpPacket, rawPacket, &packetLen));
+-
++#ifndef DISABLE_RTP_RETRANSMISSIONS
+         if (!bufferAfterEncrypt) {
+             pRtpPacket->pRawPacket = rawPacket;
+             pRtpPacket->rawPacketLength = packetLen;
+             CHK_STATUS(rtp_rolling_buffer_addRtpPacket(pRtcRtpSender->packetBuffer, pRtpPacket));
+         }
+-
++#endif
+         CHK_STATUS(srtp_session_encryptRtpPacket(pKvsPeerConnection->pSrtpSession, rawPacket, (PINT32) &packetLen));
+         sendStatus = ice_agent_send(pKvsPeerConnection->pIceAgent, rawPacket, packetLen);
+         if (sendStatus == STATUS_NET_SEND_DATA_FAILED) {
+@@ -337,12 +337,13 @@ STATUS rtp_writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+             continue;
+         }
+         CHK_STATUS(sendStatus);
++#ifndef DISABLE_RTP_RETRANSMISSIONS
+         if (bufferAfterEncrypt) {
+             pRtpPacket->pRawPacket = rawPacket;
+             pRtpPacket->rawPacketLength = packetLen;
+             CHK_STATUS(rtp_rolling_buffer_addRtpPacket(pRtcRtpSender->packetBuffer, pRtpPacket));
+         }
+-
++#endif
+         // https://tools.ietf.org/html/rfc3550#section-6.4.1
+         // The total number of payload octets (i.e., not including header or padding) transmitted in RTP data packets by the sender
+         headerLen = RTP_HEADER_LEN(pRtpPacket);
+diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
+index 213a74b20..3b6f7d7d0 100644
+--- a/src/source/PeerConnection/SessionDescription.c
++++ b/src/source/PeerConnection/SessionDescription.c
+@@ -8,6 +8,7 @@
+ #define JSMN_HEADER
+ #endif
+ #include "jsmn.h"
++#include <inttypes.h>
+ 
+ #define VIDEO_SUPPPORT_TYPE(codec) (codec == RTC_CODEC_VP8 || codec == RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE)
+ #define AUDIO_SUPPORT_TYPE(codec)  (codec == RTC_CODEC_MULAW || codec == RTC_CODEC_ALAW || codec == RTC_CODEC_OPUS)
+@@ -42,7 +43,7 @@ STATUS sdp_serializeInit(PRtcSessionDescriptionInit pSessionDescriptionInit, PCH
+ 
+         amountWritten =
+             SNPRINTF(sessionDescriptionJSON + *sessionDescriptionJSONLen, sessionDescriptionJSON == NULL ? 0 : inputSize - *sessionDescriptionJSONLen,
+-                     "%*.*s%s", lineLen, lineLen, curr, SESSION_DESCRIPTION_INIT_LINE_ENDING);
++                     "%*.*s%s", (int)lineLen, (int)lineLen, curr, SESSION_DESCRIPTION_INIT_LINE_ENDING);
+         CHK(sessionDescriptionJSON == NULL || ((inputSize - *sessionDescriptionJSONLen) >= amountWritten), STATUS_BUFFER_TOO_SMALL);
+ 
+         *sessionDescriptionJSONLen += amountWritten;
+@@ -379,7 +380,7 @@ STATUS sdp_populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKv
+         attributeCount++;
+ 
+         STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc-group", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "FID %u %u",
++        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "FID %" PRIu32 " %" PRIu32 "",
+                  pKvsRtpTransceiver->sender.ssrc, pKvsRtpTransceiver->sender.rtxSsrc);
+         attributeCount++;
+         // no rtx.
+@@ -391,43 +392,43 @@ STATUS sdp_populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKv
+     }
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u cname:%s",
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " cname:%s",
+              pKvsRtpTransceiver->sender.ssrc, pKvsPeerConnection->localCNAME);
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u msid:%s %s",
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " msid:%s %s",
+              pKvsRtpTransceiver->sender.ssrc, pRtcMediaStreamTrack->streamId, pRtcMediaStreamTrack->trackId);
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u mslabel:%s",
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " mslabel:%s",
+              pKvsRtpTransceiver->sender.ssrc, pRtcMediaStreamTrack->streamId);
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u label:%s",
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " label:%s",
+              pKvsRtpTransceiver->sender.ssrc, pRtcMediaStreamTrack->trackId);
+     attributeCount++;
+ 
+     if (containRtx) {
+         STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u cname:%s",
++        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " cname:%s",
+                  pKvsRtpTransceiver->sender.rtxSsrc, pKvsPeerConnection->localCNAME);
+         attributeCount++;
+ 
+         STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u msid:%s %sRTX",
++        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " msid:%s %sRTX",
+                  pKvsRtpTransceiver->sender.rtxSsrc, pRtcMediaStreamTrack->streamId, pRtcMediaStreamTrack->trackId);
+         attributeCount++;
+ 
+         STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u mslabel:%sRTX",
++        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " mslabel:%sRTX",
+                  pKvsRtpTransceiver->sender.rtxSsrc, pRtcMediaStreamTrack->streamId);
+         attributeCount++;
+ 
+         STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "ssrc", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%u label:%sRTX",
++        SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%" PRIu32 " label:%sRTX",
+                  pKvsRtpTransceiver->sender.rtxSsrc, pRtcMediaStreamTrack->trackId);
+         attributeCount++;
+     }
+@@ -458,7 +459,7 @@ STATUS sdp_populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKv
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "mid", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%d", mediaSectionId);
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%d", (int)mediaSectionId);
+     attributeCount++;
+     // setup the direction of offer.
+     if (pKvsPeerConnection->isOffer) {
+@@ -622,7 +623,7 @@ STATUS sdp_populateSessionDescriptionDataChannel(PKvsPeerConnection pKvsPeerConn
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "mid", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+-    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%d", mediaSectionId);
++    SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, MAX_SDP_ATTRIBUTE_VALUE_LENGTH, "%d", (int)mediaSectionId);
+     attributeCount++;
+ 
+     STRNCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "sctp-port", MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+@@ -779,7 +780,7 @@ STATUS sdp_populateSessionDescription(PKvsPeerConnection pKvsPeerConnection, PSe
+                 MAX_SDP_CONNECTION_ADDRESS_LENGTH);
+ 
+         sizeRemaining = MAX_SDP_ATTRIBUTE_VALUE_LENGTH - (curr - pLocalSessionDescription->sdpAttributes[0].attributeValue);
+-        curr += SNPRINTF(curr, sizeRemaining, " %d", i);
++        curr += SNPRINTF(curr, sizeRemaining, " %d", (int) i);
+     }
+     pLocalSessionDescription->sessionAttributesCount++;
+     // a=msid-semantic
+diff --git a/src/source/Rtp/Codecs/RtpH264Payloader.c b/src/source/Rtp/Codecs/RtpH264Payloader.c
+index 24b088675..c6d219eb5 100644
+--- a/src/source/Rtp/Codecs/RtpH264Payloader.c
++++ b/src/source/Rtp/Codecs/RtpH264Payloader.c
+@@ -17,7 +17,7 @@ STATUS createPayloadForH264(UINT32 mtu, PBYTE nalus, UINT32 nalusLength, PBYTE p
+     UINT32 singlePayloadLength = 0;
+     UINT32 singlePayloadSubLenSize = 0;
+     BOOL sizeCalculationOnly = (payloadBuffer == NULL);
+-    PayloadArray payloadArray;
++    PayloadArray payloadArray = {0};
+ 
+     CHK(nalus != NULL && pPayloadSubLenSize != NULL && pPayloadLength != NULL && (sizeCalculationOnly || pPayloadSubLength != NULL), STATUS_NULL_ARG);
+     CHK(mtu > FU_A_HEADER_SIZE, STATUS_RTP_INPUT_MTU_TOO_SMALL);
+diff --git a/src/source/api_call/netio.c b/src/source/api_call/netio.c
+index 6087862ab..313d2b01c 100644
+--- a/src/source/api_call/netio.c
++++ b/src/source/api_call/netio.c
+@@ -26,7 +26,9 @@
+ //#include "azure_c_shared_utility/xlogging.h"
+ #include "mbedtls/ctr_drbg.h"
+ #include "mbedtls/entropy.h"
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
+ #include "mbedtls/net.h"
++#endif
+ #include "mbedtls/net_sockets.h"
+ 
+ /* Public headers */
+@@ -78,10 +80,24 @@ static int prvCreateX509Cert(NetIo_t* pxNet)
+     return xRes;
+ }
+ 
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++static mbedtls_ctr_drbg_context ctr_drbg;
++static mbedtls_entropy_context entropy;
++#endif
++
+ static int prvInitConfig(NetIo_t* pxNet, const char* pcRootCA, const char* pcCert, const char* pcPrivKey, bool bFilePath)
+ {
+     int xRes = STATUS_SUCCESS;
+ 
++#if (MBEDTLS_VERSION_NUMBER >= 0x03000000)
++    mbedtls_entropy_init(&entropy);
++    mbedtls_ctr_drbg_init(&ctr_drbg);
++    int mbedtls_ctr_ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
++    if (mbedtls_ctr_ret != 0) {
++        DLOGE("mbedtls_ctr_drbg_seed Error -0x%04x", mbedtls_ctr_ret);
++    }
++#endif
++
+     if (pxNet == NULL) {
+         xRes = STATUS_NULL_ARG;
+     } else {
+@@ -98,12 +114,20 @@ static int prvInitConfig(NetIo_t* pxNet, const char* pcRootCA, const char* pcCer
+                 if (bFilePath == false &&
+                     (mbedtls_x509_crt_parse(pxNet->pRootCA, (void*) pcRootCA, strlen(pcRootCA) + 1) != 0 ||
+                      mbedtls_x509_crt_parse(pxNet->pCert, (void*) pcCert, strlen(pcCert) + 1) != 0 ||
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
+                      mbedtls_pk_parse_key(pxNet->pPrivKey, (void*) pcPrivKey, strlen(pcPrivKey) + 1, NULL, 0) != 0)) {
++#else
++                     mbedtls_pk_parse_key(pxNet->pPrivKey, (void*) pcPrivKey, strlen(pcPrivKey) + 1, NULL, 0, &mbedtls_ctr_drbg_random, &ctr_drbg) != 0)) {
++#endif
+                     DLOGE("Failed to parse x509");
+                     xRes = STATUS_NULL_ARG;
+                 } else if (mbedtls_x509_crt_parse_file(pxNet->pRootCA, (void*) pcRootCA) != 0 ||
+                            mbedtls_x509_crt_parse_file(pxNet->pCert, (void*) pcCert) != 0 ||
+-                           mbedtls_pk_parse_keyfile(pxNet->pPrivKey, (void*) pcPrivKey, NULL) != 0) {
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
++                            mbedtls_pk_parse_keyfile(pxNet->pPrivKey, (void*) pcPrivKey, NULL) != 0) {
++#else
++                            mbedtls_pk_parse_keyfile(pxNet->pPrivKey, (void*) pcPrivKey, NULL, &mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
++#endif
+                 } else {
+                     mbedtls_ssl_conf_authmode(&(pxNet->xConf), MBEDTLS_SSL_VERIFY_REQUIRED);
+                     mbedtls_ssl_conf_ca_chain(&(pxNet->xConf), pxNet->pRootCA, NULL);
+diff --git a/src/source/api_call/wss_api_rsp.c b/src/source/api_call/wss_api_rsp.c
+index b8b57552d..22a83f987 100644
+--- a/src/source/api_call/wss_api_rsp.c
++++ b/src/source/api_call/wss_api_rsp.c
+@@ -119,6 +119,7 @@ STATUS wss_api_rsp_receivedMessage(const CHAR* pMessage, UINT32 messageLen, PSig
+     CHK(parsedMessageType, STATUS_SIGNALING_INVALID_MESSAGE_TYPE);
+ 
+ CleanUp:
++    CHK_LOG_ERR(retStatus);
+     SAFE_MEMFREE(pTokens);
+     WSS_RSP_EXIT();
+     return retStatus;
+diff --git a/src/source/credential/aws_signer_v4.c b/src/source/credential/aws_signer_v4.c
+index 4e713e0a4..ca4bd65d0 100644
+--- a/src/source/credential/aws_signer_v4.c
++++ b/src/source/credential/aws_signer_v4.c
+@@ -87,8 +87,10 @@ STATUS generateAwsSigV4Signature(PRequestInfo pRequestInfo, PCHAR dateTimeStr, B
+ 
+     if (authHeaders) {
+         // http://docs.aws.amazon.com/general/latest/gr/sigv4-add-signature-to-request.html
+-        curSize = SNPRINTF(pScratchBuf, scratchLen, AUTH_HEADER_TEMPLATE, AWS_SIG_V4_ALGORITHM, pRequestInfo->pAwsCredentials->accessKeyIdLen,
+-                           pRequestInfo->pAwsCredentials->accessKeyId, pCredentialScope, signedHeadersLen, pSignedHeaders, hexHmac);
++        curSize = SNPRINTF(pScratchBuf, scratchLen, AUTH_HEADER_TEMPLATE, AWS_SIG_V4_ALGORITHM,
++                           (int)pRequestInfo->pAwsCredentials->accessKeyIdLen,
++                           pRequestInfo->pAwsCredentials->accessKeyId, pCredentialScope,
++                           (int) signedHeadersLen, pSignedHeaders, hexHmac);
+     } else {
+         // Create the signature query param
+         curSize = SNPRINTF(pScratchBuf, scratchLen, SIGNATURE_PARAM_TEMPLATE, hexHmac);
+@@ -199,12 +201,16 @@ STATUS signAwsRequestInfoQueryParam(PRequestInfo pRequestInfo)
+     expirationInSeconds = MAX(MIN_AWS_SIGV4_CREDENTIALS_EXPIRATION_IN_SECONDS, expirationInSeconds);
+ 
+     // Add the params
+-    if (pRequestInfo->pAwsCredentials->sessionToken == NULL || pRequestInfo->pAwsCredentials->sessionTokenLen == 0) {
+-        len = (UINT32) SNPRINTF(pEndUrl, remaining, AUTH_QUERY_TEMPLATE, AWS_SIG_V4_ALGORITHM, pEncodedCreds, dateTimeStr, expirationInSeconds,
+-                                signedHeadersLen, pSignedHeaders);
++    if (pRequestInfo->pAwsCredentials->sessionToken == NULL ||
++            pRequestInfo->pAwsCredentials->sessionTokenLen == 0) {
++        len = (UINT32) SNPRINTF(pEndUrl, remaining, AUTH_QUERY_TEMPLATE, AWS_SIG_V4_ALGORITHM,
++                                pEncodedCreds, dateTimeStr, expirationInSeconds,
++                                (int) signedHeadersLen, pSignedHeaders);
+     } else {
+-        len = (UINT32) SNPRINTF(pEndUrl, remaining, AUTH_QUERY_TEMPLATE_WITH_TOKEN, AWS_SIG_V4_ALGORITHM, pEncodedCreds, dateTimeStr,
+-                                expirationInSeconds, signedHeadersLen, pSignedHeaders, pRequestInfo->pAwsCredentials->sessionToken);
++        len = (UINT32) SNPRINTF(pEndUrl, remaining, AUTH_QUERY_TEMPLATE_WITH_TOKEN,
++                                AWS_SIG_V4_ALGORITHM, pEncodedCreds, dateTimeStr,
++                                expirationInSeconds, (int) signedHeadersLen, pSignedHeaders,
++                                pRequestInfo->pAwsCredentials->sessionToken);
+     }
+ 
+     CHK(len > 0 && len < remaining, STATUS_BUFFER_TOO_SMALL);
+@@ -710,15 +716,15 @@ STATUS generateEncodedCredentials(PRequestInfo pRequestInfo, PCHAR dateTimeStr,
+     CHK(pRequestInfo != NULL && dateTimeStr != NULL && pCredsLen != NULL, STATUS_NULL_ARG);
+ 
+     // Calculate the max string length with '/' and a null terminator at the end
+-    credsLen = MAX_ACCESS_KEY_LEN + 1 + SIGNATURE_DATE_TIME_STRING_LEN + 1 + MAX_REGION_NAME_LEN + 1 + (UINT32) STRLEN(KINESIS_VIDEO_SERVICE_NAME) +
+-        1 + (UINT32) STRLEN(AWS_SIG_V4_SIGNATURE_END) + 1;
++    credsLen = MAX_ACCESS_KEY_LEN + 1 + SIGNATURE_DATE_TIME_STRING_LEN + 1 + MAX_REGION_NAME_LEN +
++                1 + (UINT32) STRLEN(KINESIS_VIDEO_SERVICE_NAME) + 1 + (UINT32) STRLEN(AWS_SIG_V4_SIGNATURE_END) + 1;
+ 
+     // Early exit on buffer calculation
+     CHK(pCreds != NULL, retStatus);
+ 
+-    credsLen = (UINT32) SNPRINTF(pCreds, *pCredsLen, URL_ENCODED_CREDENTIAL_TEMPLATE, pRequestInfo->pAwsCredentials->accessKeyIdLen,
+-                                 pRequestInfo->pAwsCredentials->accessKeyId, SIGNATURE_DATE_STRING_LEN, dateTimeStr, pRequestInfo->region,
+-                                 KINESIS_VIDEO_SERVICE_NAME, AWS_SIG_V4_SIGNATURE_END);
++    credsLen = (UINT32) SNPRINTF(pCreds, *pCredsLen, URL_ENCODED_CREDENTIAL_TEMPLATE, (int) pRequestInfo->pAwsCredentials->accessKeyIdLen,
++                                 pRequestInfo->pAwsCredentials->accessKeyId, SIGNATURE_DATE_STRING_LEN, dateTimeStr,
++                                 pRequestInfo->region, KINESIS_VIDEO_SERVICE_NAME, AWS_SIG_V4_SIGNATURE_END);
+     CHK(credsLen > 0 && credsLen <= *pCredsLen, STATUS_BUFFER_TOO_SMALL);
+ 
+ CleanUp:
+diff --git a/src/source/credential/aws_signer_v4.h b/src/source/credential/aws_signer_v4.h
+index a1de2bf49..79bcdc80f 100644
+--- a/src/source/credential/aws_signer_v4.h
++++ b/src/source/credential/aws_signer_v4.h
+@@ -24,6 +24,7 @@ extern "C" {
+  * HEADERS
+  ******************************************************************************/
+ #include "request_info.h"
++#include "inttypes.h"
+ 
+ /******************************************************************************
+  * DEFINITIONS
+@@ -69,14 +70,14 @@ extern "C" {
+ #define AUTH_HEADER_TEMPLATE "%s Credential=%.*s/%s, SignedHeaders=%.*s, Signature=%s"
+ 
+ // Authentication query template
+-#define AUTH_QUERY_TEMPLATE "&X-Amz-Algorithm=%s&X-Amz-Credential=%s&X-Amz-Date=%s&X-Amz-Expires=%u&X-Amz-SignedHeaders=%.*s"
++#define AUTH_QUERY_TEMPLATE "&X-Amz-Algorithm=%s&X-Amz-Credential=%s&X-Amz-Date=%s&X-Amz-Expires=%" PRIu32 "&X-Amz-SignedHeaders=%.*s"
+ 
+ // Token query param template
+ #define SECURITY_TOKEN_PARAM_TEMPLATE "&X-Amz-Security-Token=%s"
+ 
+ // Authentication query template
+ #define AUTH_QUERY_TEMPLATE_WITH_TOKEN                                                                                                               \
+-    "&X-Amz-Algorithm=%s&X-Amz-Credential=%s&X-Amz-Date=%s&X-Amz-Expires=%u&X-Amz-SignedHeaders=%.*s" SECURITY_TOKEN_PARAM_TEMPLATE
++    "&X-Amz-Algorithm=%s&X-Amz-Credential=%s&X-Amz-Date=%s&X-Amz-Expires=%" PRIu32 "&X-Amz-SignedHeaders=%.*s" SECURITY_TOKEN_PARAM_TEMPLATE
+ 
+ // Signature query param template
+ #define SIGNATURE_PARAM_TEMPLATE "&X-Amz-Signature=%s"
+diff --git a/src/source/crypto/crypto.h b/src/source/crypto/crypto.h
+index f8168e6ad..59174c047 100644
+--- a/src/source/crypto/crypto.h
++++ b/src/source/crypto/crypto.h
+@@ -66,7 +66,7 @@ typedef enum {
+ #define KVS_RSA_F4                  0x10001L
+ #define KVS_MD5_DIGEST_LENGTH       16
+ #define KVS_SHA1_DIGEST_LENGTH      20
+-#define KVS_MD5_DIGEST(m, mlen, ob) mbedtls_md5_ret((m), (mlen), (ob));
++#define KVS_MD5_DIGEST(m, mlen, ob) mbedtls_md5((m), (mlen), (ob));
+ #define KVS_HMAC(k, klen, m, mlen, ob, plen)                                                                                                         \
+     CHK(0 == mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), (k), (klen), (m), (mlen), (ob)), STATUS_HMAC_GENERATION_ERROR);           \
+     *(plen) = mbedtls_md_get_size(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256));
+diff --git a/src/source/crypto/dtls.h b/src/source/crypto/dtls.h
+index ed1052ec2..754c72a64 100644
+--- a/src/source/crypto/dtls.h
++++ b/src/source/crypto/dtls.h
+@@ -240,9 +240,20 @@ INT32 dtls_session_sendCallback(PVOID, const unsigned char*, ULONG);
+ INT32 dtls_session_receiveCallback(PVOID, unsigned char*, ULONG);
+ VOID dtls_session_setTimerCallback(PVOID, UINT32, UINT32);
+ INT32 dtls_session_getTimerCallback(PVOID);
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++VOID dtls_session_deriveKeyCallback(PVOID customData,
++                                    mbedtls_ssl_key_export_type secret_type,
++                                    const unsigned char *pMasterSecret,
++                                    unsigned int pMasterSecretLen,
++                                    const unsigned char clientRandom[MAX_DTLS_RANDOM_BYTES_LEN],
++                                    const unsigned char serverRandom[MAX_DTLS_RANDOM_BYTES_LEN],
++                                    mbedtls_tls_prf_types tlsProfile);
++#else
+ INT32 dtls_session_deriveKeyCallback(PVOID, const unsigned char*, const unsigned char*, ULONG, ULONG, ULONG,
+                                      const unsigned char[MAX_DTLS_RANDOM_BYTES_LEN], const unsigned char[MAX_DTLS_RANDOM_BYTES_LEN],
+                                      mbedtls_tls_prf_types);
++#endif
++
+ #else
+ #error "A Crypto implementation is required."
+ #endif
+diff --git a/src/source/crypto/dtls_mbedtls.c b/src/source/crypto/dtls_mbedtls.c
+index 2b7e50629..798825b62 100644
+--- a/src/source/crypto/dtls_mbedtls.c
++++ b/src/source/crypto/dtls_mbedtls.c
+@@ -11,6 +11,11 @@ mbedtls_ssl_srtp_profile DTLS_SRTP_SUPPORTED_PROFILES[] = {
+     MBEDTLS_TLS_SRTP_UNSET,
+ };
+ 
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++static mbedtls_ctr_drbg_context ctr_drbg;
++static mbedtls_entropy_context entropy;
++#endif
++
+ STATUS dtls_session_create(PDtlsSessionCallbacks pDtlsSessionCallbacks, TIMER_QUEUE_HANDLE timerQueueHandle, INT32 certificateBits,
+                            BOOL generateRSACertificate, PRtcCertificate pRtcCertificates, PDtlsSession* ppDtlsSession)
+ {
+@@ -231,6 +236,39 @@ CleanUp:
+     return retStatus;
+ }
+ 
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++void dtls_session_deriveKeyCallback(PVOID customData,
++                                    mbedtls_ssl_key_export_type secret_type,
++                                    const unsigned char *pMasterSecret,
++                                    unsigned int pMasterSecretLen,
++                                    const unsigned char clientRandom[MAX_DTLS_RANDOM_BYTES_LEN],
++                                    const unsigned char serverRandom[MAX_DTLS_RANDOM_BYTES_LEN],
++                                    mbedtls_tls_prf_types tlsProfile)
++{
++    ENTERS();
++
++    /* We're only interested in the TLS 1.2 master secret */
++    if (secret_type != MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET) {
++        printf("Secret tpe is not matching...\n");
++        return;
++    }
++
++    PDtlsSession pDtlsSession = (PDtlsSession) customData;
++    PTlsKeys pKeys = &pDtlsSession->tlsKeys;
++
++    if (pMasterSecretLen != sizeof(pKeys->masterSecret)) {
++        printf("Length check failed, pMasterSecretLen = %d, sizeof(pKeys->masterSecret) = %d\n",
++               pMasterSecretLen,  sizeof(pKeys->masterSecret));
++        return;
++    }
++
++    MEMCPY(pKeys->masterSecret, pMasterSecret, pMasterSecretLen);
++    MEMCPY(pKeys->randBytes, clientRandom, MAX_DTLS_RANDOM_BYTES_LEN);
++    MEMCPY(pKeys->randBytes + MAX_DTLS_RANDOM_BYTES_LEN, serverRandom, MAX_DTLS_RANDOM_BYTES_LEN);
++    pKeys->tlsProfile = tlsProfile;
++    LEAVES();
++}
++#else
+ INT32 dtls_session_deriveKeyCallback(PVOID customData, const unsigned char* pMasterSecret, const unsigned char* pKeyBlock, ULONG maclen, ULONG keylen,
+                                      ULONG ivlen, const unsigned char clientRandom[MAX_DTLS_RANDOM_BYTES_LEN],
+                                      const unsigned char serverRandom[MAX_DTLS_RANDOM_BYTES_LEN], mbedtls_tls_prf_types tlsProfile)
+@@ -249,6 +287,7 @@ INT32 dtls_session_deriveKeyCallback(PVOID customData, const unsigned char* pMas
+     LEAVES();
+     return 0;
+ }
++#endif
+ 
+ STATUS dtls_session_start(PDtlsSession pDtlsSession, BOOL isServer)
+ {
+@@ -284,12 +323,20 @@ STATUS dtls_session_start(PDtlsSession pDtlsSession, BOOL isServer)
+     mbedtls_ssl_conf_dtls_cookies(&pDtlsSession->sslCtxConfig, NULL, NULL, NULL);
+     CHK(mbedtls_ssl_conf_dtls_srtp_protection_profiles(&pDtlsSession->sslCtxConfig, DTLS_SRTP_SUPPORTED_PROFILES) == 0,
+         STATUS_DTLS_CREATE_SSL_FAILED);
+-    mbedtls_ssl_conf_export_keys_ext_cb(&pDtlsSession->sslCtxConfig, (mbedtls_ssl_export_keys_ext_t*) dtls_session_deriveKeyCallback, pDtlsSession);
++
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
++     mbedtls_ssl_conf_export_keys_ext_cb(&pDtlsSession->sslCtxConfig, (mbedtls_ssl_export_keys_ext_t*) dtls_session_deriveKeyCallback, pDtlsSession);
++#endif
+ 
+     CHK(mbedtls_ssl_setup(&pDtlsSession->sslCtx, &pDtlsSession->sslCtxConfig) == 0, STATUS_DTLS_SSL_CTX_CREATION_FAILED);
+     mbedtls_ssl_set_mtu(&pDtlsSession->sslCtx, DEFAULT_MTU_SIZE);
+     mbedtls_ssl_set_bio(&pDtlsSession->sslCtx, pDtlsSession, (mbedtls_ssl_send_t*) dtls_session_sendCallback,
+                         (mbedtls_ssl_recv_t*) dtls_session_receiveCallback, NULL);
++
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++    mbedtls_ssl_set_export_keys_cb(&pDtlsSession->sslCtx, (mbedtls_ssl_export_keys_t*) dtls_session_deriveKeyCallback, pDtlsSession);
++#endif
++
+     mbedtls_ssl_set_timer_cb(&pDtlsSession->sslCtx, &pDtlsSession->transmissionTimer, (mbedtls_ssl_set_timer_t*) dtls_session_setTimerCallback,
+                              (mbedtls_ssl_get_timer_t*) dtls_session_getTimerCallback);
+ 
+@@ -361,8 +408,11 @@ STATUS dtls_session_read(PDtlsSession pDtlsSession, PBYTE pData, PINT32 pDataLen
+             iterate = FALSE;
+         }
+     }
+-
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++    if (pDtlsSession->sslCtx.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER) {
++#else
+     if (pDtlsSession->sslCtx.state == MBEDTLS_SSL_HANDSHAKE_OVER) {
++#endif
+         CHK_STATUS(dtls_session_changeState(pDtlsSession, RTC_DTLS_TRANSPORT_STATE_CONNECTED));
+     }
+ 
+@@ -485,9 +535,9 @@ STATUS dtls_session_populateKeyingMaterial(PDtlsSession pDtlsSession, PDtlsKeyin
+     MUTEX_LOCK(pDtlsSession->nestedDtlsLock);
+     locked = TRUE;
+ 
+-    CHK(mbedtls_ssl_tls_prf(pKeys->tlsProfile, pKeys->masterSecret, ARRAY_SIZE(pKeys->masterSecret), KEYING_EXTRACTOR_LABEL, pKeys->randBytes,
+-                            ARRAY_SIZE(pKeys->randBytes), keyingMaterialBuffer, ARRAY_SIZE(keyingMaterialBuffer)) == 0,
+-        STATUS_INTERNAL_ERROR);
++    int ret = mbedtls_ssl_tls_prf(pKeys->tlsProfile, pKeys->masterSecret, ARRAY_SIZE(pKeys->masterSecret), KEYING_EXTRACTOR_LABEL, pKeys->randBytes,
++                            ARRAY_SIZE(pKeys->randBytes), keyingMaterialBuffer, ARRAY_SIZE(keyingMaterialBuffer));
++    CHK(ret == 0, STATUS_INTERNAL_ERROR);
+ 
+     pDtlsKeyingMaterial->key_length = MAX_SRTP_MASTER_KEY_LEN + MAX_SRTP_SALT_KEY_LEN;
+ 
+@@ -503,7 +553,12 @@ STATUS dtls_session_populateKeyingMaterial(PDtlsSession pDtlsSession, PDtlsKeyin
+     MEMCPY(pDtlsKeyingMaterial->serverWriteKey + MAX_SRTP_MASTER_KEY_LEN, &keyingMaterialBuffer[offset], MAX_SRTP_SALT_KEY_LEN);
+ 
+     mbedtls_ssl_get_dtls_srtp_negotiation_result(&pDtlsSession->sslCtx, &negotiatedSRTPProfile);
++
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++    switch (negotiatedSRTPProfile.MBEDTLS_PRIVATE(chosen_dtls_srtp_profile)) {
++#else
+     switch (negotiatedSRTPProfile.chosen_dtls_srtp_profile) {
++#endif
+         case MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80:
+             pDtlsKeyingMaterial->srtpProfile = KVS_SRTP_PROFILE_AES128_CM_HMAC_SHA1_80;
+             break;
+@@ -558,16 +613,40 @@ STATUS certificate_key_copy(mbedtls_x509_crt* pCert, mbedtls_pk_context* pKey, P
+     STATUS retStatus = STATUS_SUCCESS;
+     BOOL initialized = FALSE;
+     mbedtls_ecp_keypair *pSrcECP, *pDstECP;
++    int ret = 0;
++#if (MBEDTLS_VERSION_NUMBER >= 0x03000000)
++    mbedtls_entropy_init(&entropy);
++    mbedtls_ctr_drbg_init(&ctr_drbg);
++    int mbedtls_ctr_ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0);
++    if (mbedtls_ctr_ret != 0) {
++        printf("mbedtls_ctr_drbg_seed failed\n");
++        goto CleanUp;
++    }
++#endif
+ 
+     CHK(pCert != NULL && pKey != NULL && pDst != NULL, STATUS_DTLS_NULL_ARG);
++    printf("before mbedtls_pk_check_pair\n");
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
+     CHK(mbedtls_pk_check_pair(&pCert->pk, pKey) == 0, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#else
++    ret = mbedtls_pk_check_pair(&pCert->pk, pKey, mbedtls_ctr_drbg_random, &ctr_drbg);
++    printf("mbedtls_pk_check_pair ret: %d\n", ret);
++    CHK(ret == 0, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#endif
++    printf("after mbedtls_pk_check_pair\n");
+ 
+     mbedtls_x509_crt_init(&pDst->cert);
+     mbedtls_pk_init(&pDst->privateKey);
+     initialized = TRUE;
+ 
+     CHK(mbedtls_x509_crt_parse_der(&pDst->cert, pCert->raw.p, pCert->raw.len) == 0, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
+     CHK(mbedtls_pk_setup(&pDst->privateKey, pKey->pk_info) == 0, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#else
++    CHK(mbedtls_pk_setup(&pDst->privateKey, pKey->MBEDTLS_PRIVATE(pk_info)) == 0, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#endif
++
++    printf("after mbedtls_pk_setup\n");
+ 
+     switch (mbedtls_pk_get_type(pKey)) {
+         case MBEDTLS_PK_RSA:
+@@ -577,9 +656,16 @@ STATUS certificate_key_copy(mbedtls_x509_crt* pCert, mbedtls_pk_context* pKey, P
+         case MBEDTLS_PK_ECDSA:
+             pSrcECP = mbedtls_pk_ec(*pKey);
+             pDstECP = mbedtls_pk_ec(pDst->privateKey);
++#if MBEDTLS_VERSION_NUMBER < 0x03000000
+             CHK(mbedtls_ecp_group_copy(&pDstECP->grp, &pSrcECP->grp) == 0 && mbedtls_ecp_copy(&pDstECP->Q, &pSrcECP->Q) == 0 &&
+                     mbedtls_mpi_copy(&pDstECP->d, &pSrcECP->d) == 0,
+                 STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#else
++            CHK(mbedtls_ecp_group_copy(&pDstECP->MBEDTLS_PRIVATE(grp), &pSrcECP->MBEDTLS_PRIVATE(grp)) == 0 &&
++                    mbedtls_ecp_copy(&pDstECP->MBEDTLS_PRIVATE(Q), &pSrcECP->MBEDTLS_PRIVATE(Q)) == 0 &&
++                    mbedtls_mpi_copy(&pDstECP->MBEDTLS_PRIVATE(d), &pSrcECP->MBEDTLS_PRIVATE(d)) == 0,
++                STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
++#endif
+             break;
+         default:
+             CHK(FALSE, STATUS_DTLS_CERTIFICATE_GENERATION_FAILED);
+@@ -596,6 +682,30 @@ CleanUp:
+     return retStatus;
+ }
+ 
++#if !(defined(MBEDTLS_BIGNUM_C) && !defined(MBEDTLS_DEPRECATED_REMOVED))
++int mbedtls_x509write_crt_set_serial(mbedtls_x509write_cert *ctx,
++                                     const mbedtls_mpi *serial)
++{
++    int ret;
++    size_t tmp_len;
++
++    /* Ensure that the MPI value fits into the buffer */
++    tmp_len = mbedtls_mpi_size(serial);
++    if (tmp_len > MBEDTLS_X509_RFC5280_MAX_SERIAL_LEN) {
++        return MBEDTLS_ERR_X509_BAD_INPUT_DATA;
++    }
++
++    ctx->MBEDTLS_PRIVATE(serial_len) = tmp_len;
++
++    ret = mbedtls_mpi_write_binary(serial, ctx->MBEDTLS_PRIVATE(serial), tmp_len);
++    if (ret < 0) {
++        return ret;
++    }
++
++    return 0;
++}
++#endif // MBEDTLS_BIGNUM_C && !MBEDTLS_DEPRECATED_REMOVED
++
+ /**
+  * certificate_key_create generates a new certificate and a key
+  * If generateRSACertificate is true, RSA is going to be used for the key generation. Otherwise, ECDSA is going to be used.
+@@ -727,8 +837,11 @@ STATUS dtls_session_calculateCertificateFingerprint(mbedtls_x509_crt* pCert, PCH
+ 
+     pMdInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+     CHK(pMdInfo != NULL, STATUS_INTERNAL_ERROR);
+-
++#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 1, 0)
+     sslRet = mbedtls_sha256_ret(pCert->raw.p, pCert->raw.len, fingerprint, 0);
++#else
++    sslRet = mbedtls_sha256(pCert->raw.p, pCert->raw.len, fingerprint, 0);
++#endif
+     CHK(sslRet == 0, STATUS_INTERNAL_ERROR);
+ 
+     size = mbedtls_md_get_size(pMdInfo);
+diff --git a/src/source/crypto/tls_mbedtls.c b/src/source/crypto/tls_mbedtls.c
+index d84dca71b..a0a5676bb 100644
+--- a/src/source/crypto/tls_mbedtls.c
++++ b/src/source/crypto/tls_mbedtls.c
+@@ -175,7 +175,11 @@ STATUS tls_session_read(PTlsSession pTlsSession, PBYTE pData, UINT32 bufferLen,
+         }
+     }
+ 
++#if MBEDTLS_VERSION_NUMBER >= 0x03000000
++    if (pTlsSession->sslCtx.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER) {
++#else
+     if (pTlsSession->sslCtx.state == MBEDTLS_SSL_HANDSHAKE_OVER) {
++#endif
+         tls_session_changeState(pTlsSession, TLS_SESSION_STATE_CONNECTED);
+     }
+ 
+diff --git a/src/source/ice/connection_listener.c b/src/source/ice/connection_listener.c
+index ded8e7935..0ba4d81ec 100644
+--- a/src/source/ice/connection_listener.c
++++ b/src/source/ice/connection_listener.c
+@@ -230,8 +230,15 @@ STATUS connection_listener_start(PConnectionListener pConnectionListener)
+     locked = TRUE;
+ 
+     CHK(!IS_VALID_TID_VALUE(pConnectionListener->receiveDataRoutine), retStatus);
++#if 0
+     CHK_STATUS(THREAD_CREATE_EX(&pConnectionListener->receiveDataRoutine, CONN_LISTENER_THREAD_NAME, CONN_LISTENER_THREAD_SIZE, FALSE,
+                                 connection_listener_receiveRoutine, (PVOID) pConnectionListener));
++#else
++#define CONN_LISTNER_PRIO   7   // connection lister should have higher priority over RTP threads
++    CHK_STATUS(THREAD_CREATE_EX_PRI(&pConnectionListener->receiveDataRoutine, CONN_LISTENER_THREAD_NAME,
++                                    CONN_LISTENER_THREAD_SIZE, FALSE, connection_listener_receiveRoutine,
++                                    CONN_LISTNER_PRIO, (PVOID) pConnectionListener));
++#endif
+ 
+ CleanUp:
+ 
+diff --git a/src/source/ice/ice_agent.c b/src/source/ice/ice_agent.c
+index 323207584..98eeeacc4 100644
+--- a/src/source/ice/ice_agent.c
++++ b/src/source/ice/ice_agent.c
+@@ -27,6 +27,7 @@
+ #include "turn_connection.h"
+ #include "ice_agent_fsm.h"
+ #include "PeerConnection.h"
++#include <inttypes.h>
+ 
+ /******************************************************************************
+  * DEFINITIONS
+@@ -252,13 +253,13 @@ STATUS ice_candidate_serialize(PIceCandidate pIceCandidate, PCHAR pOutputData, P
+     // TODO FIXME real source of randomness
+     if (IS_IPV4_ADDR(&(pIceCandidate->ipAddress))) {
+         amountWritten = SNPRINTF(pOutputData, pOutputData == NULL ? 0 : *pOutputLength,
+-                                 "%u 1 udp %u %d.%d.%d.%d %d typ %s raddr 0.0.0.0 rport 0 generation 0 network-cost 999", pIceCandidate->foundation,
++                                 "%" PRIu32 " 1 udp %" PRIu32 " %d.%d.%d.%d %d typ %s raddr 0.0.0.0 rport 0 generation 0 network-cost 999", pIceCandidate->foundation,
+                                  pIceCandidate->priority, pIceCandidate->ipAddress.address[0], pIceCandidate->ipAddress.address[1],
+-                                 pIceCandidate->ipAddress.address[2], pIceCandidate->ipAddress.address[3],
++                                 (int) pIceCandidate->ipAddress.address[2], (int) pIceCandidate->ipAddress.address[3],
+                                  (UINT16) getInt16(pIceCandidate->ipAddress.port), iceAgentGetCandidateTypeStr(pIceCandidate->iceCandidateType));
+     } else {
+         amountWritten = SNPRINTF(pOutputData, pOutputData == NULL ? 0 : *pOutputLength,
+-                                 "%u 1 udp %u %02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X "
++                                 "%" PRIu32 " 1 udp %" PRIu32 " %02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X "
+                                  "%d typ %s raddr ::/0 rport 0 generation 0 network-cost 999",
+                                  pIceCandidate->foundation, pIceCandidate->priority, pIceCandidate->ipAddress.address[0],
+                                  pIceCandidate->ipAddress.address[1], pIceCandidate->ipAddress.address[2], pIceCandidate->ipAddress.address[3],
+@@ -774,10 +775,10 @@ STATUS ice_agent_validateKvsRtcConfig(PKvsRtcConfiguration pKvsRtcConfiguration)
+         pKvsRtcConfiguration->iceConnectionCheckPollingInterval = ICE_AGENT_TIMER_TA_DEFAULT;
+     }
+ 
+-    DLOGD("\n\ticeLocalCandidateGatheringTimeout: %u ms"
+-          "\n\ticeConnectionCheckTimeout: %u ms"
+-          "\n\ticeCandidateNominationTimeout: %u ms"
+-          "\n\ticeConnectionCheckPollingInterval: %u ms",
++    DLOGD("\n\ticeLocalCandidateGatheringTimeout: %" PRIu32 " ms"
++          "\n\ticeConnectionCheckTimeout: %" PRIu32 " ms"
++          "\n\ticeCandidateNominationTimeout: %" PRIu32 " ms"
++          "\n\ticeConnectionCheckPollingInterval: %" PRIu32 " ms",
+           pKvsRtcConfiguration->iceLocalCandidateGatheringTimeout / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+           pKvsRtcConfiguration->iceConnectionCheckTimeout / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+           pKvsRtcConfiguration->iceCandidateNominationTimeout / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+diff --git a/src/source/net/socket_connection.c b/src/source/net/socket_connection.c
+index 8630cef31..e1a245a89 100644
+--- a/src/source/net/socket_connection.c
++++ b/src/source/net/socket_connection.c
+@@ -404,11 +404,12 @@ STATUS socket_connection_sendWithRetry(PSocketConnection pSocketConnection, PBYT
+                     DLOGE("select() failed with errno %s", net_getErrorString(net_getErrorCode()));
+                     break;
+                 }
+-            } else if (errorNum == EINTR) {
++            } else if (errorNum == EINTR || errorNum == ENOMEM || errno == ENOBUFS) {
+                 /* nothing need to be done, just retry */
++                vTaskDelay(pdMS_TO_TICKS(50));
+             } else {
+                 /* fatal error from send() */
+-                DLOGE("sendto() failed with errno %s", net_getErrorString(errorNum));
++                DLOGE("sendto() failed with errno %d : %s", (int) errorNum, net_getErrorString(errorNum));
+                 break;
+             }
+ 
+@@ -417,8 +418,11 @@ STATUS socket_connection_sendWithRetry(PSocketConnection pSocketConnection, PBYT
+         } else {
+             bytesWritten += socketResult;
+         }
++        if (bytesWritten > 0) {
++            socketWriteAttempt = 0;
++        }
+         if (socketWriteAttempt > 1) {
+-            DLOGD("sendto retry: %d/%d", socketWriteAttempt, MAX_SOCKET_WRITE_RETRY);
++            DLOGI("sendto retry: %d/%d", socketWriteAttempt, MAX_SOCKET_WRITE_RETRY);
+         }
+     }
+ 
+diff --git a/src/source/net/socket_connection.h b/src/source/net/socket_connection.h
+index 204aaaf08..b55eca5e5 100644
+--- a/src/source/net/socket_connection.h
++++ b/src/source/net/socket_connection.h
+@@ -30,7 +30,7 @@ extern "C" {
+  * DEFINITIONS
+  ******************************************************************************/
+ #define SOCKET_SEND_RETRY_TIMEOUT_MICRO_SECOND 500000
+-#define MAX_SOCKET_WRITE_RETRY                 3
++#define MAX_SOCKET_WRITE_RETRY                 5
+ 
+ #define CLOSE_SOCKET_IF_CANT_RETRY(e, ps)                                                                                                            \
+     if ((e) != EAGAIN && (e) != EWOULDBLOCK && (e) != EINTR && (e) != EINPROGRESS && (e) != EPERM && (e) != EALREADY && (e) != ENETUNREACH) {        \
+diff --git a/src/source/signaling/signaling.c b/src/source/signaling/signaling.c
+index 71c7936d6..c86570b4a 100644
+--- a/src/source/signaling/signaling.c
++++ b/src/source/signaling/signaling.c
+@@ -469,7 +469,7 @@ STATUS signaling_send(PSignalingClient pSignalingClient, PSignalingMessage pSign
+     } else {
+         writtenSize =
+             (UINT32) SNPRINTF((PCHAR) (pSendBuffer), size, WSS_MESSAGE_TEMPLATE_WITH_CORRELATION_ID, pOfferType, MAX_SIGNALING_CLIENT_ID_LEN,
+-                              pSignalingMessage->peerClientId, pEncodedMessage, correlationLen, pSignalingMessage->correlationId);
++                              pSignalingMessage->peerClientId, pEncodedMessage, (int) correlationLen, pSignalingMessage->correlationId);
+     }
+ 
+     // Validate against max
+diff --git a/src/source/signaling/signaling.h b/src/source/signaling/signaling.h
+index 3f217aed9..f7b3aa0e6 100644
+--- a/src/source/signaling/signaling.h
++++ b/src/source/signaling/signaling.h
+@@ -28,7 +28,7 @@ extern "C" {
+ #include "kvs/webrtc_client.h"
+ #include "channel_info.h"
+ #include "timer_queue.h"
+-
++#include <inttypes.h>
+ /******************************************************************************
+  * DEFINITION
+  ******************************************************************************/
+@@ -65,10 +65,10 @@ extern "C" {
+ #define SIGNALING_CLIENT_STATE_DELETED_STR         "Deleted"
+ 
+ // Error refreshing ICE server configuration string
+-#define SIGNALING_ICE_CONFIG_REFRESH_ERROR_MSG "Failed refreshing ICE server configuration with status code 0x%08x."
++#define SIGNALING_ICE_CONFIG_REFRESH_ERROR_MSG "Failed refreshing ICE server configuration with status code 0x%08" PRIx32 "."
+ 
+ // Error reconnecting to the signaling service
+-#define SIGNALING_RECONNECT_ERROR_MSG "Failed to reconnect with status code 0x%08x."
++#define SIGNALING_RECONNECT_ERROR_MSG "Failed to reconnect with status code 0x%08" PRIx32 "."
+ 
+ // Max error string length
+ #define SIGNALING_MAX_ERROR_MESSAGE_LEN 512
+diff --git a/src/source/utils/allocators.c b/src/source/utils/allocators.c
+index 97288e266..e083561cc 100644
+--- a/src/source/utils/allocators.c
++++ b/src/source/utils/allocators.c
+@@ -17,12 +17,24 @@
+ #include "allocators.h"
+ #include "Include_i.h"
+ 
++#include <inttypes.h>
++#include <esp_heap_caps.h>
++
++// #ifndef CONFIG_IDF_TARGET_ESP32P4
++#define ALLOC_EXT   1
++// #endif
++
+ //
+ // Default allocator functions
+ //
+ PVOID defaultMemAlloc(SIZE_T size)
+ {
++#if ALLOC_EXT
++    void *ptr =  heap_caps_malloc(size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
++    return ptr;
++#else
+     return malloc(size);
++#endif
+ }
+ 
+ PVOID defaultMemAlignAlloc(SIZE_T size, SIZE_T alignment)
+@@ -33,19 +45,32 @@ PVOID defaultMemAlignAlloc(SIZE_T size, SIZE_T alignment)
+     return malloc(size);
+ #elif defined(_MSC_VER) || defined(__MINGW64__) || defined(__MINGW32__)
+     return _aligned_malloc(size, alignment);
++#else
++#if ALLOC_EXT
++    return heap_caps_aligned_alloc(alignment, size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+ #else
+     return memalign(size, alignment);
++#endif // PSRAM
+ #endif
+ }
+ 
+ PVOID defaultMemCalloc(SIZE_T num, SIZE_T size)
+ {
++#if ALLOC_EXT
++    void *ptr = heap_caps_calloc(num, size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
++    return ptr;
++#else
+     return calloc(num, size);
++#endif
+ }
+ 
+ PVOID defaultMemRealloc(PVOID ptr, SIZE_T size)
+ {
++#if ALLOC_EXT
++    return heap_caps_realloc(ptr, size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
++#else
+     return realloc(ptr, size);
++#endif
+ }
+ 
+ VOID defaultMemFree(VOID* ptr)
+@@ -107,3 +132,20 @@ BOOL checkBufferValues(PVOID ptr, BYTE val, SIZE_T size)
+ }
+ 
+ memChk globalMemChk = checkBufferValues;
++
++void print_mem_stats()
++{
++    uint32_t freeSize = esp_get_free_heap_size();
++    printf("The available total size of heap:%" PRIu32 "\n", freeSize);
++
++    printf("\tDescription\tInternal\tSPIRAM\n");
++    printf("Current Free Memory\t%d\t\t%d\n",
++           heap_caps_get_free_size(MALLOC_CAP_8BIT) - heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
++           heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
++    printf("Largest Free Block\t%d\t\t%d\n",
++           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
++           heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
++    printf("Min. Ever Free Size\t%d\t\t%d\n",
++           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
++           heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
++}
+diff --git a/src/source/utils/allocators.h b/src/source/utils/allocators.h
+index b0b93f9ec..6c9093f79 100644
+--- a/src/source/utils/allocators.h
++++ b/src/source/utils/allocators.h
+@@ -24,6 +24,8 @@ extern "C" {
+ #include <malloc.h>
+ #endif
+ 
++#include "kvs/common_defs.h"
++
+ ////////////////////////////////////////////////////
+ // Dumping memory functionality
+ ////////////////////////////////////////////////////
+@@ -97,6 +99,8 @@ extern memChk globalMemChk;
+     } while (0)
+ #endif
+ 
++void print_mem_stats();
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/source/utils/filelogger.c b/src/source/utils/filelogger.c
+index 6f7a7031c..e40bbcf6b 100644
+--- a/src/source/utils/filelogger.c
++++ b/src/source/utils/filelogger.c
+@@ -17,6 +17,8 @@
+ #include "fileio.h"
+ #include "filelogger.h"
+ #include "logger.h"
++#include <inttypes.h>
++
+ /**
+  * Kinesis Video Producer File based logger
+  */
+@@ -61,7 +63,7 @@ STATUS file_logger_flushToFile()
+     ULLTOSTR(gFileLogger->currentFileIndex, fileIndexBuffer, ARRAY_SIZE(fileIndexBuffer), 10, &fileIndexStrSize);
+     retStatus = fileio_write(gFileLogger->indexFilePath, TRUE, FALSE, (PBYTE) fileIndexBuffer, (STRLEN(fileIndexBuffer)) * SIZEOF(CHAR));
+     if (STATUS_FAILED(retStatus)) {
+-        PRINTF("Failed to write to index file due to error 0x%08x\n", retStatus);
++        PRINTF("Failed to write to index file due to error 0x%08" PRIx32 "\n", retStatus);
+         retStatus = STATUS_SUCCESS;
+     }
+ 
+@@ -107,7 +109,7 @@ VOID fileLoggerLogPrintFn(UINT32 level, PCHAR tag, PCHAR fmt, ...)
+         if (gFileLogger->currentOffset + offset >= gFileLogger->stringBufferLen) {
+             status = file_logger_flushToFile();
+             if (STATUS_FAILED(status)) {
+-                PRINTF("flush log to file failed with 0x%08x\n", status);
++                PRINTF("flush log to file failed with 0x%08" PRIx32 "\n", status);
+             }
+         }
+ 
+@@ -138,7 +140,7 @@ VOID fileLoggerLogPrintFn(UINT32 level, PCHAR tag, PCHAR fmt, ...)
+         if (offset > 0 && gFileLogger->currentOffset + offset >= gFileLogger->stringBufferLen) {
+             status = file_logger_flushToFile();
+             if (STATUS_FAILED(status)) {
+-                PRINTF("flush log to file failed with 0x%08x\n", status);
++                PRINTF("flush log to file failed with 0x%08" PRIx32 "\n", status);
+             }
+ 
+             // even if file_logger_flushToFile failed, currentOffset will still be reset to 0
+@@ -241,7 +243,7 @@ STATUS file_logger_free()
+         MUTEX_LOCK(gFileLogger->lock);
+         retStatus = file_logger_flushToFile();
+         if (STATUS_FAILED(retStatus)) {
+-            PRINTF("flush log to file failed with 0x%08x\n", retStatus);
++            PRINTF("flush log to file failed with 0x%08" PRIx32 "\n", retStatus);
+         }
+ 
+         retStatus = STATUS_SUCCESS;
+diff --git a/src/source/utils/thread.c b/src/source/utils/thread.c
+index 4b0205652..f3658b4ba 100644
+--- a/src/source/utils/thread.c
++++ b/src/source/utils/thread.c
+@@ -184,7 +184,7 @@ PUBLIC_API TID defaultGetThreadId()
+     return (TID) pthread_self();
+ }
+ 
+-PUBLIC_API STATUS defaultCreateThreadEx(PTID pThreadId, PCHAR threadName, UINT32 threadSize, BOOL joinable, startRoutine start, PVOID args)
++STATUS defaultCreateThreadPri(PTID pThreadId, PCHAR threadName, UINT32 threadSize, BOOL joinable, startRoutine start, UINT32 prio, PVOID args)
+ {
+     STATUS retStatus = STATUS_SUCCESS;
+     pthread_t threadId;
+@@ -285,11 +285,22 @@ CleanUp:
+     return retStatus;
+ }
+ 
++
++PUBLIC_API STATUS defaultCreateThreadEx(PTID pThreadId, PCHAR threadName, UINT32 threadSize, BOOL joinable, startRoutine start, PVOID args)
++{
++    return defaultCreateThreadPri(pThreadId, threadName, threadSize, joinable, start, CONFIG_PTHREAD_TASK_PRIO_DEFAULT, args);
++}
++
+ PUBLIC_API STATUS defaultCreateThread(PTID pThreadId, startRoutine start, PVOID args)
+ {
+     return defaultCreateThreadEx(pThreadId, NULL, 0, TRUE, start, args);
+ }
+ 
++PUBLIC_API STATUS defaultCreateThreadExPri(PTID pThreadId, PCHAR threadName, UINT32 threadSize, BOOL joinable, startRoutine start, INT32 prio, PVOID args)
++{
++    return defaultCreateThreadPri(pThreadId, threadName, threadSize, joinable, start, prio, args);
++}
++
+ PUBLIC_API STATUS defaultJoinThread(TID threadId, PVOID* retVal)
+ {
+     STATUS retStatus = STATUS_SUCCESS;
+@@ -430,6 +441,7 @@ getTId globalGetThreadId = defaultGetThreadId;
+ getTName globalGetThreadName = defaultGetThreadName;
+ createThread globalCreateThread = defaultCreateThread;
+ createThreadEx globalCreateThreadEx = defaultCreateThreadEx;
++createThreadExPri globalCreateThreadExPri = defaultCreateThreadExPri;
+ threadSleep globalThreadSleep = defaultThreadSleep;
+ threadSleepUntil globalThreadSleepUntil = defaultThreadSleepUntil;
+ joinThread globalJoinThread = defaultJoinThread;
+diff --git a/src/source/utils/thread.h b/src/source/utils/thread.h
+index 23e38a0da..fc56a43af 100644
+--- a/src/source/utils/thread.h
++++ b/src/source/utils/thread.h
+@@ -54,6 +54,7 @@ typedef STATUS (*getTName)(TID, PCHAR, UINT32);
+ typedef PVOID (*startRoutine)(PVOID);
+ typedef STATUS (*createThread)(PTID, startRoutine, PVOID);
+ typedef STATUS (*createThreadEx)(PTID, PCHAR, UINT32, BOOL, startRoutine, PVOID);
++typedef STATUS (*createThreadExPri)(PTID, PCHAR, UINT32, BOOL, startRoutine, INT32, PVOID);
+ typedef STATUS (*joinThread)(TID, PVOID*);
+ typedef VOID (*threadSleep)(UINT64);
+ typedef VOID (*threadSleepUntil)(UINT64);
+@@ -72,6 +73,7 @@ extern getTName globalGetThreadName;
+ //
+ extern createThread globalCreateThread;
+ extern createThreadEx globalCreateThreadEx;
++extern createThreadExPri globalCreateThreadExPri;
+ extern joinThread globalJoinThread;
+ extern threadSleep globalThreadSleep;
+ extern threadSleepUntil globalThreadSleepUntil;
+diff --git a/src/source/utils/timer_queue.c b/src/source/utils/timer_queue.c
+index 2a4d724e6..5aef9b43d 100644
+--- a/src/source/utils/timer_queue.c
++++ b/src/source/utils/timer_queue.c
+@@ -409,7 +409,8 @@ STATUS priv_timer_queue_createInternalEx(UINT32 maxTimers, PTimerQueue* ppTimerQ
+ 
+     // Create the executor thread
+     CHK_STATUS(THREAD_CREATE_EX(&threadId, timerName, threadSize, FALSE, timer_queue_executor, (PVOID) pTimerQueue));
+-
++    // #define TIMER_QUEUE_TASK_PRIO    6
++    // CHK_STATUS(THREAD_CREATE_EX_PRI(&threadId, timerName, threadSize, FALSE, timer_queue_executor, TIMER_QUEUE_TASK_PRIO, (PVOID) pTimerQueue));
+     pTimerQueue->executorTid = threadId;
+ 
+     while (!ATOMIC_LOAD_BOOL(&pTimerQueue->started)) {
+-- 
+2.39.3 (Apple Git-145)
+
