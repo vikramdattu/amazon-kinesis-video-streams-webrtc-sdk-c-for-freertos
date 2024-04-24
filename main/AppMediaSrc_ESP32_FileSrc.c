@@ -83,6 +83,8 @@ CleanUp:
 #if CONFIG_IDF_TARGET_ESP32S3
 #define USE_H264_ENC    1
 #include "H264FrameGrabber.h"
+#include <freertos/freeRTOS.h>
+#include <freertos/task.h>
 #endif
 
 PVOID sendVideoPackets(PVOID args)
@@ -106,7 +108,11 @@ PVOID sendVideoPackets(PVOID args)
 #endif
 
     pCodecStreamConf = &pFileSrcContext->codecConfiguration.videoStream;
+#ifdef ENCODER_TASK
+    pCodecStreamConf->pFrameBuffer = NULL; // We grab an allocated frame
+#else
     pCodecStreamConf->pFrameBuffer = (PBYTE) MEMALLOC(FRAME_BUF_SIZE);
+#endif
     pCodecStreamConf->frameBufferSize = FRAME_BUF_SIZE;
     frame.presentationTs = 0;
     startTime = GETTIME();
@@ -114,12 +120,30 @@ PVOID sendVideoPackets(PVOID args)
 
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
 #if USE_H264_ENC
+#ifdef ENCODER_TASK
+        esp_h264_out_buf_t *h264_frame = get_h264_encoded_frame();
+        if (!h264_frame) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        if (h264_frame->type == ESP_H264_FRAME_TYPE_IDR ||
+                h264_frame->type == ESP_H264_FRAME_TYPE_I) {
+            frame.flags = FRAME_FLAG_KEY_FRAME;
+        } else {
+            frame.flags = FRAME_FLAG_DISCARDABLE_FRAME;
+        }
+        pCodecStreamConf->pFrameBuffer = h264_frame->buffer;
+        frame.frameData = h264_frame->buffer;
+        frame.size = h264_frame->len;
+        free(h264_frame);
+#else
         get_h264_encoded_frame(pCodecStreamConf->pFrameBuffer, &frameSize);
 
         // #TBD
         frame.flags = FRAME_FLAG_KEY_FRAME;
         frame.frameData = pCodecStreamConf->pFrameBuffer;
         frame.size = frameSize;
+#endif
 #else
         fileIndex = fileIndex % NUMBER_OF_H264_FRAME_FILES + 1;
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/h264SampleFrames/frame-%04" PRIu32 ".h264", fileIndex);
@@ -148,7 +172,12 @@ PVOID sendVideoPackets(PVOID args)
         if (pFileSrcContext->mediaSinkHook != NULL) {
             retStatus = pFileSrcContext->mediaSinkHook(pFileSrcContext->mediaSinkHookUserdata, &frame);
         }
-
+#ifdef ENCODER_TASK
+        if (pCodecStreamConf->pFrameBuffer) {
+            // Free the frame after use, as it was allocated outside of this scope
+            SAFE_MEMFREE(pCodecStreamConf->pFrameBuffer);
+        }
+#endif
         // Adjust sleep in the case the sleep itself and writeFrame take longer than expected. Since sleep makes sure that the thread
         // will be paused at least until the given amount, we can assume that there's no too early frame scenario.
         // Also, it's very unlikely to have a delay greater than FILESRC_VIDEO_FRAME_DURATION, so the logic assumes that this is always

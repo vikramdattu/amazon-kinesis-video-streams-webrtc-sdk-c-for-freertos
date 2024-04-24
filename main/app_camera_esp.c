@@ -46,7 +46,9 @@ int app_camera_init() {
   config.pin_reset = CAMERA_PIN_RESET;
   config.xclk_freq_hz = XCLK_FREQ_HZ;
   config.pixel_format = CAMERA_PIXEL_FORMAT;
+#if CONFIG_CAMERA_CONVERTER_ENABLED
   // config.conv_mode = YUV422_TO_YUV420;
+#endif
   config.frame_size = CAMERA_FRAME_SIZE;
   config.jpeg_quality = 10;
   config.fb_count = 2;
