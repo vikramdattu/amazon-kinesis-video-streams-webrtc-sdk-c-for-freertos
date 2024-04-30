@@ -1,30 +1,42 @@
 # amazon-kinesis-video-streams-webrtc-sdk-c-for-freertos
 
-This project demonstrate how to port [Amazon Kinesis Video WebRTC C SDK](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c) to FreeRTOS.  It uses the [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html) as a reference platform.  You may follow the same procedure to port to other hardware platforms.
+This project demonstrates how to port [Amazon Kinesis Video WebRTC C SDK](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c) to FreeRTOS.
 
-## Clone projects
+Following Espressif boards are tested with the example as a reference platform:
+- [ESP-S3-EYE](https://github.com/espressif/esp-who/blob/master/docs/en/get-started/ESP32-S3-EYE_Getting_Started_Guide.md)
+- [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html)
+
+You may follow the same procedure to port to other hardware platforms.
+
+## Clone the project
 
 Please git clone this project using the command below.  This will git sub-module all depended submodules under main/lib.
 
-```
+```bash
 git submodule update --init --recursive
 ```
 
 ## Reference platform
 
-We use [ESP IDF 4.4.2](https://github.com/espressif/esp-idf/releases/tag/v4.4.2) and the [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html) as the reference platform.
+We use [ESP IDF 4.4.2](https://github.com/espressif/esp-idf/releases/tag/v4.4.2) SDK, the [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html) and [ESP32-S3-EYE](https://github.com/espressif/esp-who/blob/master/docs/en/get-started/ESP32-S3-EYE_Getting_Started_Guide.md) as the reference platforms.
+ - We recommend using `ESP32-S3-EYE` as it provides the camera feed and the example can be tested with the live feed.
 
 Please git clone the ESP IDF 4.4.2 with following command
 
 ```
 git clone -b v4.4.2 --recursive https://github.com/espressif/esp-idf.git esp-idf-v4.4.2
 ```
-make change on file
+- This example is also tested for the latest ESP-IDF releases till `release/v5.3`. Please feel free to use your exising clone if you've already cloned IDF.
 
+Make change to the following file:
+
+```bash
 components/esp_rom/include/esp32/rom/ets_sys.h
+```
 
 line 638 to 644 to following
 
+```patch
 +#ifndef STATUS
 typedef enum {
     OK = 0,
@@ -34,10 +46,15 @@ typedef enum {
     CANCEL,
 } STATUS;
 +#endif
+```
 
-Please follow the [Espressif instructions](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html) to set up the environment.
+- The corresponding file for esp32s3 is:
 
-ESP IDF 4.4.2 only supports Python version 3.10 and below and was tested on version 3.9.16.
+```bash
+components/esp_rom/include/esp32s3/rom/ets_sys.h
+```
+
+Please follow the [Espressif instructions](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html) to set up the IDF environment.
 
 ## Apply patches
 
@@ -86,9 +103,19 @@ $git am --continue
 
 ## Configure the project
 
+Select the target using the following command:
+
+```bash
+# for esp32
+idf.py set-target esp32
+
+# for esp32s3
+idf.py set-target esp32s3
+```
+
 Use menuconfig of ESP IDF to configure the project.
 
-```
+```bash
 idf.py menuconfig
 ```
 
@@ -103,13 +130,15 @@ idf.py menuconfig
   - AWS_KVS_CHANNEL
   - AWS_KVS_LOG_LEVEL
 
-- The modifications needed by this project can be seen in the sdkconfig file located at the root directory. 
+- The modifications needed by this project can be seen in the auto-generated `sdkconfig` file located at the root directory.
 
 ### Video source
 
+ - If you are using ESP32-S3-EYE board, please skip this section. ESP32-S3-EYE uses live stream from the camera out of the box.
+
 This project uses pre-recorded h.264 frame files for video streaming.  Please put the files on a SD card.  The files should look like:
 
-/sdcard/h264SampleFrames/frame-%04d.h264. 
+/sdcard/h264SampleFrames/frame-%04d.h264.
 
  The “%04d” part of the file name should be replaced by a sequence number of the frame.
 
@@ -146,7 +175,7 @@ See the Getting Started Guide of ESP IDF for full steps to configure and use ESP
 
 ### Known limitations and issues
 
-This project does not use audio at this point of time. When running on the ESP-Wrover-Kit, this project can only run at low frame rate and low bit rate.  
+This project does not use audio at this point in time. When running on the ESP-Wrover-Kit, this project can only run at low frame rate and low bit rate.
 
 The current implementation does not support data channel. Please check back later for availability of the data channel feature.
 
@@ -185,4 +214,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This project is licensed under the Apache-2.0 License.
-
