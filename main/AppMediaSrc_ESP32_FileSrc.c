@@ -194,6 +194,7 @@ CleanUp:
     CHK_LOG_ERR(retStatus);
     /* free resources */
     DLOGD("terminating media source");
+    print_mem_stats();
     if (pFileSrcContext->mediaEosHook != NULL) {
         retStatus = pFileSrcContext->mediaEosHook(pFileSrcContext->mediaEosHookUserdata);
     }
@@ -253,6 +254,7 @@ CleanUp:
     CHK_LOG_ERR(retStatus);
     /* free resources */
     DLOGD("terminating media source");
+    print_mem_stats();
     if (pFileSrcContext->mediaEosHook != NULL) {
         retStatus = pFileSrcContext->mediaEosHook(pFileSrcContext->mediaEosHookUserdata);
     }

@@ -12,16 +12,31 @@
 const char *TAG = "H264FramerGrabber";
 
 #if CONFIG_IDF_TARGET_ESP32S3
-#include <esp_heap_caps.h>
-#include "esp_h264_enc.h"
+#define OLD_H264_ENCODER 1
 
+#include <esp_heap_caps.h>
+
+#if OLD_H264_ENCODER
+#include "esp_h264_enc.h"
+#else
+#include "esp_h264_enc_single_sw.h"
+#include "esp_h264_enc_single.h"
+#endif
+
+static int frame_count = 0;
+#if OLD_H264_ENCODER
 static esp_h264_enc_t handle = NULL;
 static esp_h264_enc_frame_t out_frame = { 0 };
 static esp_h264_raw_frame_t in_frame = { 0 };
-static int frame_count = 0;
 static esp_h264_enc_cfg_t cfg = DEFAULT_H264_ENCODER_CONFIG();
-
 static esp_h264_enc_t initialize_h264_encoder();
+#else
+static esp_h264_enc_handle_t handle = NULL;
+static esp_h264_enc_out_frame_t out_frame = { 0 };
+static esp_h264_enc_in_frame_t in_frame = { 0 };
+static esp_h264_enc_cfg_t cfg = {0};
+static esp_h264_enc_handle_t initialize_h264_encoder();
+#endif
 
 #ifdef ENCODER_TASK
 #include <freertos/freeRTOS.h>
@@ -88,7 +103,11 @@ static void video_encoder_task(void *arg)
 {
     static uint8_t fill_val = 0;
     frame_count = 0;
+#if OLD_H264_ENCODER
     int one_image_size = cfg.height * cfg.width * 2;
+#else
+    int one_image_size = cfg.res.height * cfg.res.width * 2;
+#endif
     while(1) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
@@ -117,11 +136,16 @@ static void video_encoder_task(void *arg)
         }
 
         /* Calculate the frame length */
+#if OLD_H264_ENCODER
         frame->len = 0;
         for (size_t layer = 0; layer < out_frame.layer_num; layer++) {
             frame->len += out_frame.layer_data[layer].len;
         }
         frame->type = out_frame.frame_type_t;
+#else
+        frame->len = out_frame.length;
+        frame->type = out_frame.frame_type;
+#endif
 
         /* allocate the memory of size *frame_len */
         frame->buffer = (uint8_t *) MEMALLOC(frame->len);
@@ -139,10 +163,14 @@ static void video_encoder_task(void *arg)
         uint8_t *out_buf = frame->buffer;
 
         /* Copy the frame */
+#if OLD_H264_ENCODER
         for (size_t layer = 0; layer < out_frame.layer_num; layer++) {
             memcpy(out_buf, out_frame.layer_data[layer].buffer, out_frame.layer_data[layer].len);
             out_buf += out_frame.layer_data[layer].len;
         }
+#else
+        memcpy(out_buf, out_frame.raw_data.buffer, frame->len);
+#endif
 
         /* Insert it into the queue */
         if (frame_queue_insert(frame) != ESP_OK) {
@@ -206,8 +234,11 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
         is_first = false;
     }
     frame_count = 0;
+#if OLD_H264_ENCODER
     int one_image_size = cfg.height * cfg.width * 2;
-
+#else
+    int one_image_size = cfg.res.height * cfg.res.width * 2;
+#endif
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) {
         memcpy(in_frame.raw_data.buffer, fb->buf, one_image_size);
@@ -240,22 +271,53 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
 }
 #endif
 
+#if OLD_H264_ENCODER
 static esp_h264_enc_t initialize_h264_encoder()
+#else
+static esp_h264_enc_handle_t initialize_h264_encoder()
+#endif
 {
     esp_h264_err_t ret = ESP_H264_ERR_OK;
     int one_image_size = 0;
     cfg.fps = 10;//DEFAULT_FPS_VALUE;
+#if OLD_H264_ENCODER
     cfg.width = 320;
     cfg.height = 240;
     // cfg.gop_size = 10;
     cfg.pic_type = ESP_H264_RAW_FMT_YUV422;
     one_image_size = cfg.height * cfg.width * 2; // 1.5 : Pixel is 1.5 on ESP_H264_RAW_FMT_I420.
+#else
+    cfg.gop = 30;
+    cfg.res.width = 320;
+    cfg.res.height = 240;
+    cfg.rc.bitrate = cfg.res.width * cfg.res.height * cfg.fps / 20;
+    cfg.rc.qp_min = 30;
+    cfg.rc.qp_max = 30;
+    cfg.pic_type = ESP_H264_RAW_FMT_YUYV;
+    one_image_size = cfg.res.height * cfg.res.width * 2; // 1.5 : Pixel is 1.5 on ESP_H264_RAW_FMT_I420.
+#endif
     in_frame.raw_data.buffer = (uint8_t *) MEMALIGNALLOC(one_image_size, 16);
     if (in_frame.raw_data.buffer == NULL) {
         printf("in_frame.raw_data.buffer allocation failed\n");
         goto h264_example_exit;
     }
+#if OLD_H264_ENCODER
     ret = esp_h264_enc_open(&cfg, &handle);
+#else
+    out_frame.raw_data.len = one_image_size;
+    out_frame.raw_data.buffer = (uint8_t *) MEMALIGNALLOC(one_image_size, 16);
+    if (out_frame.raw_data.buffer == NULL) {
+        printf("out_frame.raw_data.buffer allocation failed\n");
+        goto h264_example_exit;
+    }
+    ret = esp_h264_enc_sw_new(&cfg, &handle);
+    if (ret != ESP_H264_ERR_OK) {
+        printf("esp_h264_enc_sw_new failed ret %d, handle %p\n", ret, handle);
+        goto h264_example_exit;
+    }
+
+    ret = esp_h264_enc_open(handle);
+#endif
     if (ret != ESP_H264_ERR_OK) {
         printf("Open failed. ret %d, handle %p\n", ret, handle);
         goto h264_example_exit;
@@ -270,5 +332,8 @@ h264_example_exit:
     }
 
     esp_h264_enc_close(handle);
+#ifndef OLD_H264_ENCODER
+    esp_h264_enc_del(handle);
+#endif
     return NULL;
 }
