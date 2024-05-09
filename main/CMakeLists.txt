@@ -42,7 +42,8 @@ set(app_srcs    "kvswebrtc_example_main.c"
                 "app_camera_esp.c"
                 "esp_cli.c"
                 "wifi_cli.c"
-                "H264FrameGrabber.c")
+                "H264FrameGrabber.c"
+                "OpusFrameGrabber.c")
 
 set(priv_requires esp_wifi spiffs console)
 set(requires nvs_flash mbedtls lwip fatfs esp_common pthread)

@@ -82,7 +82,9 @@ CleanUp:
 
 #if CONFIG_IDF_TARGET_ESP32S3
 #define USE_H264_ENC    1
+#define USE_OPUS_ENC    1
 #include "H264FrameGrabber.h"
+#include "OpusFrameGrabber.h"
 #include <freertos/freeRTOS.h>
 #include <freertos/task.h>
 #endif
@@ -219,6 +221,19 @@ PVOID sendAudioPackets(PVOID args)
     frame.presentationTs = 0;
 
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
+#if USE_OPUS_ENC
+        esp_opus_out_buf_t *opus_frame = get_opus_encoded_frame();
+        if (!opus_frame) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        frame.flags = FRAME_FLAG_KEY_FRAME;
+        pCodecStreamConf->pFrameBuffer = opus_frame->buffer;
+        frame.frameData = opus_frame->buffer;
+        frame.size = opus_frame->len;
+        free(opus_frame);
+#else
         fileIndex = fileIndex % NUMBER_OF_OPUS_FRAME_FILES + 1;
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/opusSampleFrames/sample-%03" PRIu32 ".opus", fileIndex);
 
@@ -233,7 +248,7 @@ PVOID sendAudioPackets(PVOID args)
         frame.size = frameSize;
 
         CHK(readFrameFromDisk(frame.frameData, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_AUDIO_SINK);
-
+#endif
         frame.presentationTs += FILESRC_AUDIO_FRAME_DURATION;
         frame.trackId = DEFAULT_AUDIO_TRACK_ID;
         frame.duration = 0;
@@ -243,7 +258,14 @@ PVOID sendAudioPackets(PVOID args)
             retStatus = pFileSrcContext->mediaSinkHook(pFileSrcContext->mediaSinkHookUserdata, &frame);
         }
 
+#if USE_OPUS_ENC
+        if(pCodecStreamConf != NULL){
+            SAFE_MEMFREE(pCodecStreamConf->pFrameBuffer);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+#else
         THREAD_SLEEP(FILESRC_AUDIO_FRAME_DURATION);
+#endif
     }
 
 CleanUp:
@@ -399,6 +421,7 @@ PVOID app_media_source_run(PVOID args)
 
     THREAD_CREATE_EX(&videoSenderTid, APP_MEDIA_VIDEO_SENDER_THREAD_NAME, APP_MEDIA_VIDEO_SENDER_THREAD_SIZE, TRUE, sendVideoPackets, (PVOID) pFileSrcContext);
 #ifdef ENABLE_AUDIO_STREAM
+    // vTaskDelay(pdMS_TO_TICKS(5 * 1000));
     THREAD_CREATE_EX(&audioSenderTid, APP_MEDIA_AUDIO_SENDER_THREAD_NAME, APP_MEDIA_AUDIO_SENDER_THREAD_SIZE, TRUE, sendAudioPackets, (PVOID) pFileSrcContext);
 #endif
     if (videoSenderTid != INVALID_TID_VALUE) {

@@ -12,5 +12,8 @@ dependencies:
       - if: "target in [esp32p4]"
         version: "*"
 
+  espressif/esp_audio_codec:
+    version: "^1.0.1"
+
   espressif/esp32-camera:
     version: ^2.0.2
