@@ -191,35 +191,41 @@ static void video_encoder_task(void *arg)
     }
 }
 
+static void camera_and_encoder_init(void)
+{
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* TODO: Breaking code... Needs to be fixed to use common code... */
+    esp32p4_frame_grabber_init();
+#else
+    app_camera_init();
+    printf("camera init done\n");
+
+    initialize_h264_encoder();
+    print_mem_stats();
+
+    frame_lock = xSemaphoreCreateMutex();
+
+#define ENC_TASK_STACK_SIZE     (12 * 1024)
+#define ENC_TASK_PRIO           (4) // lesser than the video `sender_task`
+    StaticTask_t *task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+    void *task_stack = MEMALLOC(ENC_TASK_STACK_SIZE);
+    assert(task_buffer && task_stack);
+
+    /* the task never exits, so do not bother to free the buffers */
+    TaskHandle_t enc_task_handle = xTaskCreateStatic(video_encoder_task, "video_encoder", ENC_TASK_STACK_SIZE,
+                                                     NULL, ENC_TASK_PRIO, task_stack, task_buffer);
+    if (enc_task_handle == NULL) {
+        ESP_LOGE(TAG, "failed to create encoder task!");
+    }
+    printf("encoder initialized\n");
+#endif
+}
+
 esp_h264_out_buf_t *get_h264_encoded_frame()
 {
     static bool is_first = true;
     if (is_first) {
-
-#if CONFIG_IDF_TARGET_ESP32P4
-        /* TODO: Breaking code... Needs to be fixed to use common code... */
-        esp32p4_frame_grabber_init();
-#else
-        app_camera_init();
-        printf("camera init done\n");
-
-        initialize_h264_encoder();
-        print_mem_stats();
-
-        frame_lock = xSemaphoreCreateMutex();
-
-#define ENC_TASK_STACK_SIZE     (12 * 1024)
-#define ENC_TASK_PRIO           (4) // lesser than the video `sender_task`
-        StaticTask_t *task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
-        void *task_stack = MEMALLOC(ENC_TASK_STACK_SIZE);
-        assert(task_buffer && task_stack);
-
-        /* the task never exits, so do not bother to free the buffers */
-        xTaskCreateStatic(video_encoder_task, "video_encoder", ENC_TASK_STACK_SIZE,
-                          NULL, ENC_TASK_PRIO, task_stack, task_buffer);
-
-        printf("encoder initialized\n");
-#endif
+        camera_and_encoder_init();
         is_first = false;
     }
 #if CONFIG_IDF_TARGET_ESP32P4

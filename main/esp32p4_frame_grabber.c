@@ -104,10 +104,13 @@ static esp_err_t camera_init(void)
 // Data read callback to read raw data
 static void data_read_callback(void *ctx, esp_h264_buf_t *in_data)
 {
-    in_data->buffer = jpeg_next_buf;
     if (jpeg_next_buf != jpeg_last_buf) {
+        /* New frame not available */
         camera_next_buf = jpeg_last_buf;
         jpeg_last_buf = jpeg_next_buf;
+        in_data->buffer = NULL;
+    } else {
+        in_data->buffer = jpeg_next_buf;
     }
 }
 
@@ -306,9 +309,11 @@ static void video_encoder_task(void *arg)
         static int print_cnt = 100;
         esp_err_t ret = esp_h264_hw_enc_process_one_frame();
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Encoding failed");
-            vTaskDelay(1);
-            continue;;
+            if (ret != ESP_ERR_NOT_FOUND) {
+                ESP_LOGE(TAG, "Encoding failed");
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
 
         if (print_cnt == 100) {
@@ -394,9 +399,15 @@ void esp32p4_frame_grabber_init(void)
 #if ENCODER_TASK
 #define ENC_TASK_STACK_SIZE     (8 * 1024)
 #define ENC_TASK_PRIO           (4) // lesser than the video `sender_task`
-    esp_err_t err = xTaskCreate(video_encoder_task, "video_encoder",
-                                ENC_TASK_STACK_SIZE, NULL, ENC_TASK_PRIO, NULL);
-    if (err != pdPASS) {
+    StaticTask_t *task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+    void *task_stack = MEMALLOC(ENC_TASK_STACK_SIZE);
+    assert(task_buffer && task_stack);
+
+    /* the task never exits, so do not bother to free the buffers */
+    TaskHandle_t enc_task_handle = xTaskCreateStatic(video_encoder_task, "video_encoder", ENC_TASK_STACK_SIZE,
+                                                     NULL, ENC_TASK_PRIO, task_stack, task_buffer);
+
+    if (enc_task_handle == NULL) {
         ESP_LOGE(TAG, "failed to create encoder task!");
     }
 #endif

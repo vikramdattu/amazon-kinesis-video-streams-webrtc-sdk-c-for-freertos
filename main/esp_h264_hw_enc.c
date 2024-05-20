@@ -92,9 +92,7 @@ esp_err_t esp_h264_hw_enc_process_one_frame()
         if (enc_data.data_read_cb) {
             enc_data.data_read_cb(NULL, &read_data);
             if (read_data.buffer == NULL) {
-                // vTaskDelay(pdMS_TO_TICKS(20));
-                return ESP_FAIL;
-                // continue;
+                return ESP_ERR_NOT_FOUND;
             }
             enc_data.in_frame.raw_data.buffer = read_data.buffer;
         }
