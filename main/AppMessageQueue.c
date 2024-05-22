@@ -18,6 +18,12 @@
 #define LOG_CLASS "AppMessageQueue"
 #include "AppMessageQueue.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <esp_log.h>
+#include <esp_cpu.h>
+
 /******************************************************************************
  * DEFINITIONS
  ******************************************************************************/
@@ -56,6 +62,7 @@ CleanUp:
 STATUS app_msg_q_pushMsqIntoPendingMsgQ(PPendingMessageQueue pPendingMsgQ, PReceivedSignalingMessage pMsg)
 {
     STATUS retStatus = STATUS_SUCCESS;
+
     PReceivedSignalingMessage pReceivedSignalingMessageCopy = NULL;
 
     CHK((pPendingMsgQ != NULL) && (pMsg != NULL), STATUS_APP_MSGQ_NULL_ARG);
@@ -157,7 +164,7 @@ STATUS app_msg_q_getPendingMsgQByHashVal(PConnectionMsgQ pConnectionMsgQ, UINT64
     BOOL iterate = TRUE;
 
     CHK((pConnectionMsgQ != NULL) && (ppPendingMsgQ != NULL), STATUS_APP_MSGQ_NULL_ARG);
-
+    *ppPendingMsgQ = NULL;
     pConnections = pConnectionMsgQ->pMsqQueue;
 
     CHK_STATUS((stack_queue_iterator_get(pConnections, &iterator)));
@@ -180,10 +187,6 @@ STATUS app_msg_q_getPendingMsgQByHashVal(PConnectionMsgQ pConnectionMsgQ, UINT64
 
 CleanUp:
 
-    if (ppPendingMsgQ != NULL) {
-        *ppPendingMsgQ = pPendingMsgQ;
-    }
-
     return retStatus;
 }
 
@@ -205,14 +208,15 @@ STATUS app_msg_q_removeExpiredPendingMsgQ(PConnectionMsgQ pConnectionMsgQ, UINT6
     for (i = 0; i < count; i++) {
         CHK_STATUS((stack_queue_dequeue(pConnection, &data)));
 
-        // Check for expiry
+        // Check for the expiry
         pPendingMessageQueue = (PPendingMessageQueue) data;
         CHK(pPendingMessageQueue != NULL, STATUS_APP_MSGQ_NULL_PENDING_MSGQ);
         if (pPendingMessageQueue->createTime + interval < curTime) {
             // Message queue has expired and needs to be freed
             app_msg_q_freePendingMsgQ(pPendingMessageQueue);
+            pPendingMessageQueue = NULL;
             DLOGD("Remove expired pending msgQ.");
-        } else {
+        } else if (pPendingMessageQueue->messageQueue) {
             // Enqueue back again as it's still valued
             CHK_STATUS((stack_queue_enqueue(pConnection, data)));
         }

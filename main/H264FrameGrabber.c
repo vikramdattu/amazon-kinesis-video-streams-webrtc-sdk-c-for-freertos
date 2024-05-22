@@ -224,7 +224,7 @@ esp_h264_out_buf_t *get_h264_encoded_frame()
     return frame;
 }
 #else
-void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
+void get_h264_encoded_frame(uint8_t **out_buf, uint32_t *frame_len, uint32_t *frame_type)
 {
     static bool is_first = true;
     static uint8_t fill_val = 0;
@@ -232,15 +232,6 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
 #if CONFIG_IDF_TARGET_ESP32P4
         /* TODO: Breaking code... Needs to be fixed to use common code... */
         esp32p4_frame_grabber_init();
-        esp_h264_buf_t *h264_buffer = esp32p4_grab_one_frame();
-        if (h264_buffer && out_buf) {
-            *frame_len = h264_buffer->len;
-            // encoded frame copy into the target buffer
-            memcpy(out_buf, h264_buffer->buffer, *frame_len);
-        } else {
-            *frame_len = 0;
-        }
-        return;
 #else
         app_camera_init();
         printf("camera init done\n");
@@ -257,6 +248,22 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
     int one_image_size = cfg.height * cfg.width * 2;
 #else
     int one_image_size = cfg.res.height * cfg.res.width * 2;
+
+#endif
+#if CONFIG_IDF_TARGET_ESP32P4
+    *frame_len = 0;
+    esp_h264_buf_t *h264_buffer = esp32p4_grab_one_frame();
+    if (h264_buffer) {
+        if (out_buf) {
+            *frame_len = h264_buffer->len;
+            *out_buf = h264_buffer->buffer;
+            *frame_type = (uint32_t) h264_buffer->type;
+        } else {
+            free(h264_buffer->buffer);
+            h264_buffer->buffer = NULL;
+        }
+    }
+    return;
 #endif
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) {

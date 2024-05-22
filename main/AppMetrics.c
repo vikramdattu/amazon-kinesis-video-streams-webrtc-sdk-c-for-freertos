@@ -15,6 +15,12 @@
 #define LOG_CLASS "AppMetrics"
 #include "AppMetrics.h"
 #include "filelogger.h"
+
+#include <inttypes.h>
+#include <esp_log.h>
+#include <freertos/freeRTOS.h>
+#include <freertos/task.h>
+
 UINT32 getLogLevel(VOID)
 {
     PCHAR pLogLevel;

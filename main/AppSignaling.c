@@ -79,8 +79,8 @@ STATUS app_signaling_queryServer(PAppSignaling pAppSignaling, PRtcIceServer pIce
                  */
 
                 STRNCPY(pIceServer[uriCount + 1].urls, pIceConfigInfo->uris[j], MAX_ICE_CONFIG_URI_LEN);
-                STRNCPY(pIceServer[uriCount + 1].credential, pIceConfigInfo->password, MAX_ICE_CONFIG_CREDENTIAL_LEN);
-                STRNCPY(pIceServer[uriCount + 1].username, pIceConfigInfo->userName, MAX_ICE_CONFIG_USER_NAME_LEN);
+                STRNCPY(pIceServer[uriCount + 1].credential, pIceConfigInfo->password, MAX_ICE_CONFIG_CREDENTIAL_LEN - 1);
+                STRNCPY(pIceServer[uriCount + 1].username, pIceConfigInfo->userName, MAX_ICE_CONFIG_USER_NAME_LEN - 1);
                 uriCount++;
             }
         }

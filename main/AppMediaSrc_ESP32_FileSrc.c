@@ -18,8 +18,14 @@
 #include "fileio.h"
 #include <stdbool.h>
 #include <inttypes.h>
+#include <esp_log.h>
 
-#define NUMBER_OF_H264_FRAME_FILES               255
+#include <freertos/freeRTOS.h>
+#include <freertos/task.h>
+
+static const char *TAG = "Media_FileSrc";
+
+#define NUMBER_OF_H264_FRAME_FILES               60
 #define NUMBER_OF_OPUS_FRAME_FILES               618
 
 // FIXME... In my experiments, DEFAULT_FPS_VALUE is not translated optimally and ends up
@@ -84,7 +90,7 @@ CleanUp:
 }
 
 // TODO: Move configs to a common config file
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S3
 #define USE_H264_ENC    1
 #define USE_OPUS_ENC    1
 #include "H264FrameGrabber.h"
@@ -96,6 +102,12 @@ CleanUp:
 // sdcard not tested for p4. Please use spiffs
 // #define USE_SPIFFS_STORAGE  1
 
+#define CPU_STATS
+
+// Old logic assumes, the frame generation + data send is faster than required and hence
+// adds sleep and stalls it. My experiments show, that this is not true and we should accurately
+// calculate the time taken by last send and sleep for saved time.
+#define NEW_SLEEP_LOGIC
 
 PVOID sendVideoPackets(PVOID args)
 {
@@ -103,13 +115,15 @@ PVOID sendVideoPackets(PVOID args)
     PFileSrcContext pFileSrcContext = (PFileSrcContext) args;
     PCodecStreamConf pCodecStreamConf = NULL;
     Frame frame;
-    UINT32 fileIndex = 0, frameSize;
+    UINT32 fileIndex = 0, frameSize = 0;
     CHAR filePath[MAX_PATH_LEN + 1];
     STATUS status;
-    UINT64 startTime, lastFrameTime, elapsed;
+    UINT64 startTime, lastFrameTime, elapsed, time1, time2;
+    static int my_count = 0;
 
     CHK(pFileSrcContext != NULL, STATUS_MEDIA_NULL_ARG);
 
+    pCodecStreamConf = &pFileSrcContext->codecConfiguration.videoStream;
 #if USE_H264_ENC
     // I have seen esp_h264 encoded frames to be about 16KB in some cases
     const int FRAME_BUF_SIZE = 50 * 1024;
@@ -125,11 +139,22 @@ PVOID sendVideoPackets(PVOID args)
 #endif
     pCodecStreamConf->frameBufferSize = FRAME_BUF_SIZE;
     frame.presentationTs = 0;
+    UINT64 refTime = GETTIME();
+#ifdef NEW_SLEEP_LOGIC
     lastFrameTime = GETTIME();
-
+#else
+    startTime = GETTIME();
+    lastFrameTime = startTime;
+#endif
+#ifdef CPU_STATS
+    time2 = GETTIME();
+    int total_elapsed = 0, raw_elapsed = 0;
+#endif
+    static int cnt = 0;
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
 #if USE_H264_ENC
 #ifdef ENCODER_TASK
+        cnt++;
         esp_h264_out_buf_t *h264_frame = get_h264_encoded_frame();
         if (!h264_frame) {
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -146,10 +171,25 @@ PVOID sendVideoPackets(PVOID args)
         frame.size = h264_frame->len;
         free(h264_frame);
 #else
-        get_h264_encoded_frame(pCodecStreamConf->pFrameBuffer, &frameSize);
 
-        // #TBD
-        frame.flags = FRAME_FLAG_KEY_FRAME;
+#ifdef CPU_STATS
+        UINT64 time_start = GETTIME();
+#endif
+        uint32_t frame_type = ESP_H264_FRAME_TYPE_IDR;
+        get_h264_encoded_frame(pCodecStreamConf->pFrameBuffer, &frameSize, &frame_type);
+        if (frameSize == 0) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        if (frameSize >= 128 * 1024) {
+            ESP_LOGI(TAG, "Frame size > 128K size %d", (int) frameSize);
+        }
+        if (frame_type == ESP_H264_FRAME_TYPE_IDR ||
+                frame_type == ESP_H264_FRAME_TYPE_I) {
+            frame.flags = FRAME_FLAG_KEY_FRAME;
+        } else {
+            frame.flags = FRAME_FLAG_DISCARDABLE_FRAME;
+        }
         frame.frameData = pCodecStreamConf->pFrameBuffer;
         frame.size = frameSize;
 #endif
@@ -187,7 +227,7 @@ PVOID sendVideoPackets(PVOID args)
         CHK(readFrameFromDisk(frame.frameData, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_VIDEO_SINK);
 #endif
 
-        frame.presentationTs += FILESRC_VIDEO_FRAME_DURATION;
+        frame.presentationTs = GETTIME() - refTime;
         frame.trackId = DEFAULT_VIDEO_TRACK_ID;
         frame.duration = 0;
         frame.version = FRAME_CURRENT_VERSION;
@@ -205,14 +245,22 @@ PVOID sendVideoPackets(PVOID args)
         // will be paused at least until the given amount, we can assume that there's no too early frame scenario.
         // Also, it's very unlikely to have a delay greater than FILESRC_VIDEO_FRAME_DURATION, so the logic assumes that this is always
         // true for simplicity.
+#ifdef NEW_SLEEP_LOGIC
         startTime = GETTIME();
         elapsed = lastFrameTime - startTime;
-        uint32_t to_sleep = 100 * 1000; // sleep for at least 1 ms
-        if (elapsed + to_sleep < FILESRC_VIDEO_FRAME_DURATION) {
-            to_sleep = FILESRC_VIDEO_FRAME_DURATION - (elapsed + to_sleep);
+
+        // penalty if last frame took longer
+        uint32_t to_sleep = (20 * 1000 * 1000) / DEFAULT_TIME_UNIT_IN_NANOS; // 20ms delay
+        if (elapsed /*+ to_sleep*/ < FILESRC_VIDEO_FRAME_DURATION) {
+            to_sleep = FILESRC_VIDEO_FRAME_DURATION - elapsed;
         }
         THREAD_SLEEP(to_sleep);
         lastFrameTime = startTime + to_sleep;
+#else
+        elapsed = lastFrameTime - startTime;
+        THREAD_SLEEP(FILESRC_VIDEO_FRAME_DURATION - elapsed % FILESRC_VIDEO_FRAME_DURATION);
+        lastFrameTime = GETTIME();
+#endif
     }
 
 CleanUp:
@@ -235,7 +283,7 @@ PVOID sendAudioPackets(PVOID args)
     PFileSrcContext pFileSrcContext = (PFileSrcContext) args;
     PCodecStreamConf pCodecStreamConf = NULL;
     Frame frame;
-    UINT32 fileIndex = 0, frameSize;
+    UINT32 fileIndex = 0, frameSize = 0;
     CHAR filePath[MAX_PATH_LEN + 1];
     STATUS status;
 
@@ -451,9 +499,10 @@ PVOID app_media_source_run(PVOID args)
     ATOMIC_STORE_BOOL(&pFileSrcContext->shutdownFileSrc, FALSE);
     DLOGI("media source is starting");
 
+    // THREAD_CREATE_EX_PRI(&videoSenderTid, APP_MEDIA_VIDEO_SENDER_THREAD_NAME,
+    //                      APP_MEDIA_VIDEO_SENDER_THREAD_SIZE, TRUE, sendVideoPackets, 10, (PVOID) pFileSrcContext);
     THREAD_CREATE_EX(&videoSenderTid, APP_MEDIA_VIDEO_SENDER_THREAD_NAME, APP_MEDIA_VIDEO_SENDER_THREAD_SIZE, TRUE, sendVideoPackets, (PVOID) pFileSrcContext);
 #ifdef ENABLE_AUDIO_STREAM
-    // vTaskDelay(pdMS_TO_TICKS(5 * 1000));
     THREAD_CREATE_EX(&audioSenderTid, APP_MEDIA_AUDIO_SENDER_THREAD_NAME, APP_MEDIA_AUDIO_SENDER_THREAD_SIZE, TRUE, sendAudioPackets, (PVOID) pFileSrcContext);
 #endif
     if (videoSenderTid != INVALID_TID_VALUE) {

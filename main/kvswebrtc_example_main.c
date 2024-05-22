@@ -30,6 +30,7 @@
 #include "AppMain.h"
 #include "AppMediaSrc_ESP32_FileSrc.h"
 
+#include <esp_cpu.h>
 #include "esp_cli.h"
 #include "wifi_cli.h"
 
@@ -362,15 +363,16 @@ static esp_err_t spiffs_init(void)
 static esp_err_t storage_init()
 {
 #if USE_SPIFFS_STORAGE
-    // nothing is initialized for now...
-    uint32_t frame_size = 0;
-    // initialize in advance!
-    for (int cnt = 0; cnt < 10; cnt++) {
-        get_encoded_frame(NULL, &frame_size);
+#if 1
+    // Encoder warm-up code: Waste few frames before sending
+    uint32_t frame_size = 0, frame_type;
+    for (int cnt = 0; cnt < 30; cnt++) {
+        get_encoded_frame(NULL, &frame_size, &frame_type);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
-    return ESP_OK;
+#endif
     // return spiffs_init();
+    return ESP_OK;
 #else
     return sdcard_init();
 #endif
@@ -404,19 +406,17 @@ void app_main(void)
     wifi_register_cli();
 
     print_mem_stats();
-    if (storage_init() == ESP_FAIL) {
-        print_mem_stats();
-        return;
-    }
+
+#if 1
+    // if (storage_init() == ESP_FAIL) {
+    //     print_mem_stats();
+    //     return;
+    // }
 
     print_mem_stats();
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
-
-    // if (storage_init() == ESP_FAIL) {
-    //     return;
-    // }
 
     // using ntp to acquire the current time.
     {
@@ -457,8 +457,28 @@ void app_main(void)
     setenv("AWS_IOT_CORE_THING_NAME", CONFIG_AWS_IOT_CORE_THING_NAME, 1);
     #endif
 
+    // uint32_t frame_size = 0, frame_type;
+    // get_encoded_frame(NULL, &frame_size, &frame_type);
+    // vTaskDelay(100);
+#endif
+    // esp_cpu_set_watchpoint(2, (void *) (0x48f74000), 0x100, ESP_CPU_WATCHPOINT_STORE);
+    // esp_cpu_set_watchpoint(0, (void *) (0x48f8b000), 0x100, ESP_CPU_WATCHPOINT_STORE);
+    // esp_cpu_set_watchpoint(1, (void *) (0x48f9c000), 0x100, ESP_CPU_WATCHPOINT_STORE);
+
+    // for (int i = 0; i < 500; i++) {
+    //     if (heap_caps_check_integrity_all(true) == false) {
+    //         printf("Corruption detected at %s: %d\n", __FUNCTION__, __LINE__);
+    //     }
+    //     uint32_t frame_type, frameSize;
+    //     get_encoded_frame(NULL, &frameSize, &frame_type);
+    //     vTaskDelay(pdMS_TO_TICKS(10));
+    // }
+
+    // esp_restart();
+
     WebRTCAppMain(&gAppMediaSrc);
 
     print_mem_stats();
     storage_deinit();
+    esp_restart();
 }

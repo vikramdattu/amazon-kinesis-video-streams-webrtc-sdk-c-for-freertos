@@ -76,6 +76,9 @@ STATUS app_msg_q_pushMsqIntoPendingMsgQ(PPendingMessageQueue pPendingMsgQ, PRece
  * @return STATUS code of the execution. STATUS_SUCCESS on success.
  */
 STATUS app_msg_q_handlePendingMsgQ(PPendingMessageQueue pPendingMsgQ, MsgHandleHook msgHandleHook, PVOID uData);
+
+STATUS app_msg_q_checkPendingMsgQ(PConnectionMsgQ pConnectionMsgQ);
+
 /**
  * @brief free the pending message queue.
  *

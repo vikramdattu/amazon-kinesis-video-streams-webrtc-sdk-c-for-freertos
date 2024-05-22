@@ -26,6 +26,10 @@
 #include "logger.h"
 #include "crc32.h"
 
+#include <inttypes.h>
+#include <esp_err.h>
+#include <esp_log.h>
+
 static PAppConfiguration gAppConfiguration = NULL; //!< for the system-level signal handler
 static BOOL gInitialized = FALSE;                  //!< for the system-level signal handler
 
@@ -61,6 +65,7 @@ static STATUS app_common_onMediaSinkHook(PVOID udata, PFrame pFrame)
         } else {
             pRtcRtpTransceiver = pStreamingSession->pVideoRtcRtpTransceiver;
         }
+
         retStatus = rtp_writeFrame(pRtcRtpTransceiver, pFrame);
         if (retStatus != STATUS_SUCCESS && retStatus != STATUS_SRTP_NOT_READY_YET) {
             // STATUS_SRTP_NOT_READY_YET
@@ -155,10 +160,12 @@ static STATUS app_common_onSignalingClientError(UINT64 userData, STATUS status, 
     return STATUS_SUCCESS;
 }
 
+extern esp_err_t esp_h264_hw_enc_set_bitrate(uint32_t bitrate);
 static VOID app_common_onBandwidthEstimation(UINT64 userData, DOUBLE maxiumBitrate)
 {
     UNUSED_PARAM(userData);
-    DLOGV("received bitrate suggestion: %f", maxiumBitrate);
+    // use this suggestion to adjust encoder bitrate...
+    esp_h264_hw_enc_set_bitrate((uint32_t) maxiumBitrate);
 }
 
 static VOID app_common_onSenderBandwidthEstimation(UINT64 userData, UINT32 txBytes, UINT32 rxBytes, UINT32 txPacketsCnt, UINT32 rxPacketsCnt,
@@ -211,7 +218,7 @@ static STATUS app_common_respondWithAnswer(PStreamingSession pStreamingSession)
 
     pMessage->version = SIGNALING_MESSAGE_CURRENT_VERSION;
     pMessage->messageType = SIGNALING_MESSAGE_TYPE_ANSWER;
-    STRNCPY(pMessage->peerClientId, pStreamingSession->peerId, MAX_SIGNALING_CLIENT_ID_LEN);
+    STRNCPY(pMessage->peerClientId, pStreamingSession->peerId, MAX_SIGNALING_CLIENT_ID_LEN - 1);
     pMessage->payloadLen = (UINT32) STRLEN(pMessage->payload);
     pMessage->correlationId[0] = '\0';
 
@@ -293,14 +300,15 @@ static VOID app_common_onIceCandidate(UINT64 userData, PCHAR candidateJson)
     } else if (pStreamingSession->remoteCanTrickleIce && ATOMIC_LOAD_BOOL(&pStreamingSession->peerIdReceived)) {
         pMessage->version = SIGNALING_MESSAGE_CURRENT_VERSION;
         pMessage->messageType = SIGNALING_MESSAGE_TYPE_ICE_CANDIDATE;
-        STRNCPY(pMessage->peerClientId, pStreamingSession->peerId, MAX_SIGNALING_CLIENT_ID_LEN);
+        STRNCPY(pMessage->peerClientId, pStreamingSession->peerId, MAX_SIGNALING_CLIENT_ID_LEN - 1);
         pMessage->payloadLen = (UINT32) STRNLEN(candidateJson, MAX_SIGNALING_MESSAGE_LEN);
-        STRNCPY(pMessage->payload, candidateJson, pMessage->payloadLen);
+        strcpy(pMessage->payload, candidateJson);
         pMessage->correlationId[0] = '\0';
         CHK_STATUS((app_signaling_sendMsg(&pStreamingSession->pAppConfiguration->appSignaling, pMessage)));
     }
 
 CleanUp:
+
     SAFE_MEMFREE(pMessage);
     CHK_LOG_ERR((retStatus));
 }
@@ -445,6 +453,7 @@ static STATUS app_common_onSignalingMessageReceived(UINT64 userData, PReceivedSi
                 CHK_STATUS((
                     app_msg_q_getPendingMsgQByHashVal(pAppConfiguration->pRemotePeerPendingSignalingMessages, clientIdHashKey, TRUE, &pPendingMsgQ)));
                 CHK(FALSE, retStatus);
+                CHK_STATUS((app_msg_q_handlePendingMsgQ(pPendingMsgQ, NULL, pStreamingSession)));
             }
             CHK_STATUS(
                 (app_common_createStreamingSession(pAppConfiguration, pReceivedSignalingMessage->signalingMessage.peerClientId, &pStreamingSession)));
@@ -633,7 +642,7 @@ STATUS app_common_createStreamingSession(PAppConfiguration pAppConfiguration, PC
     CHK(pAppMediaSrc != NULL, STATUS_APP_COMMON_NULL_ARG);
     CHK_STATUS((pAppMediaSrc->app_media_source_isReady(pAppConfiguration->pMediaContext)));
 
-    STRNCPY(pStreamingSession->peerId, peerId, MAX_SIGNALING_CLIENT_ID_LEN);
+    STRNCPY(pStreamingSession->peerId, peerId, MAX_SIGNALING_CLIENT_ID_LEN - 1);
     ATOMIC_STORE_BOOL(&pStreamingSession->peerIdReceived, TRUE);
 
     pStreamingSession->pAppConfiguration = pAppConfiguration;
@@ -1065,6 +1074,7 @@ STATUS pollApp(PAppConfiguration pAppConfiguration)
         }
 
         CHK_STATUS((app_signaling_check(&pAppConfiguration->appSignaling)));
+
         // Check if any lingering pending message queues
         CHK_STATUS(
             (app_msg_q_removeExpiredPendingMsgQ(pAppConfiguration->pRemotePeerPendingSignalingMessages, APP_PENDING_MESSAGE_CLEANUP_DURATION)));

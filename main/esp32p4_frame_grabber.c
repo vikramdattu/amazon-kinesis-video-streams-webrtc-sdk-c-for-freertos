@@ -40,7 +40,8 @@ static uint8_t *jpeg_next_buf;
 
 static uint8_t *camera_next_buf;
 static uint8_t *camera_last_buf;
-static esp_h264_buf_t h264_out_data;
+static esp_h264_out_buf_t h264_out_data;
+static SemaphoreHandle_t frame_lock;
 
 #if SDCARD_SAVE
 static FILE* f264 = NULL;
@@ -61,8 +62,9 @@ static bool camera_trans_done(void)
 
     bsp_camera_set_frame_buffer(camera_next_buf);
     camera_last_buf = camera_next_buf;
+
     frames_received_cnt++; // Update the frames received count
-    return false;
+    return true;
 }
 
 static esp_err_t camera_init(void)
@@ -108,17 +110,18 @@ static void data_read_callback(void *ctx, esp_h264_buf_t *in_data)
         camera_next_buf = jpeg_last_buf;
         jpeg_last_buf = jpeg_next_buf;
     }
-    // print_mem_stats();
 }
 
 // Data write callback to output encoded frames
-static void data_write_callback(void *ctx, esp_h264_buf_t *out_data)
+static void data_write_callback(void *ctx, esp_h264_out_buf_t *out_data)
 {
     h264_out_data.buffer = out_data->buffer;
     h264_out_data.len = out_data->len;
+    h264_out_data.type = out_data->type;
 
 #if SDCARD_SAVE
     if (f264) {
+        esp_cache_msync(out_data->buffer, out_data->len, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
         int wr_len = fwrite(out_data->buffer, 1, out_data->len, f264);
         if (wr_len != out_data->len) {
             ESP_LOGW(TAG, "expected wr: %" PRIu32 " actual: %d", out_data->len);
@@ -144,15 +147,6 @@ void init_clock(void)
 
     uint32_t rd;
 
-    // rd = REG_READ(HP_SYS_CLKRST_REF_CLK_CTRL0_REG);
-    // REG_WRITE(HP_SYS_CLKRST_REF_CLK_CTRL0_REG, rd & (~HP_SYS_CLKRST_REG_REF_240M_CLK_DIV_NUM_M));
-
-    // rd = REG_READ(HP_SYS_CLKRST_REF_CLK_CTRL0_REG);
-    // rd &= 0xffffff;
-    // rd |= 0x1<<24;
-    // REG_WRITE(HP_SYS_CLKRST_REF_CLK_CTRL1_REG, rd);
-
-#if 1
     REG_SET_FIELD(HP_SYS_CLKRST_PERI_CLK_CTRL02_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CLK_SRC_SEL, 1);
     REG_SET_FIELD(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_CSI_DPHY_CLK_SRC_SEL, 1);
     REG_CLR_BIT(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CFG_CLK_EN);
@@ -181,7 +175,6 @@ void init_clock(void)
     // REG_SET_FIELD(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_DIV_NUM, (480000000 / MIPI_DPI_CLOCK_RATE) - 1);
     REG_SET_FIELD(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_SRC_SEL, 1);
     REG_SET_BIT(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_EN);
-#endif
 
     REG_CLR_BIT(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG, HP_SYS_CLKRST_REG_GDMA_SYS_CLK_EN);
     REG_SET_BIT(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG, HP_SYS_CLKRST_REG_GDMA_SYS_CLK_EN);
@@ -225,18 +218,148 @@ void esp32p4_frame_grabber_cleanup(void)
 #endif
 }
 
+typedef struct video_node video_node_t;
+typedef struct video_node {
+    void *data;
+    video_node_t *next;
+} video_node_t;
+
+static video_node_t *queue_head = NULL;
+
+#define MAX_CNT 3
+static volatile int curr_cnt = 0;
+
+static void* frame_queue_get()
+{
+    void *data = NULL;
+    video_node_t *head = NULL;
+    xSemaphoreTake(frame_lock, portMAX_DELAY);
+    if (queue_head) {
+        head = queue_head;
+        data = head->data;
+        queue_head = head->next;
+        curr_cnt--;
+    }
+    xSemaphoreGive(frame_lock);
+    if (head) {
+        free(head);
+    }
+    return data;
+}
+
+static esp_err_t frame_queue_insert(void* data)
+{
+    while(curr_cnt >= MAX_CNT) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    video_node_t *node = calloc(1, sizeof(video_node_t));
+    if (node == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate node");
+    }
+    node->data = data;
+    node->next = NULL;
+    xSemaphoreTake(frame_lock, portMAX_DELAY);
+    if (!queue_head) {
+        queue_head = node;
+    } else {
+        video_node_t *pos = queue_head;
+        while (pos->next) {
+            pos = pos->next;
+        }
+        pos->next = node;
+    }
+    curr_cnt++;
+    xSemaphoreGive(frame_lock);
+    return ESP_OK;
+}
+
+#if ENCODER_TASK
+esp_h264_out_buf_t *esp32p4_grab_one_frame()
+{
+    esp_h264_out_buf_t *frame = (esp_h264_out_buf_t *) frame_queue_get();
+    if (frame) {
+        // printf("got a frame with size %d\n", (int) frame->len);
+    }
+    return frame;
+}
+#else
+esp_h264_out_buf_t *esp32p4_grab_one_frame()
+{
+    static int print_cnt = 100;
+    esp_err_t ret = esp_h264_hw_enc_process_one_frame();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Encoding failed");
+        return NULL;
+    }
+    if (print_cnt == 100) {
+        ESP_LOGI(TAG, "frames_received_cnt %d, curr frame len %" PRIu32, frames_received_cnt, h264_out_data.len);
+        print_mem_stats();
+        print_cnt = 0;
+    }
+    print_cnt++;
+    return &h264_out_data;
+}
+#endif
+
+static void video_encoder_task(void *arg)
+{
+    while (1) {
+        static int print_cnt = 100;
+        esp_err_t ret = esp_h264_hw_enc_process_one_frame();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Encoding failed");
+            vTaskDelay(1);
+            continue;;
+        }
+
+        if (print_cnt == 100) {
+            ESP_LOGI(TAG, "frames_received_cnt %d, curr frame len %" PRIu32, frames_received_cnt, h264_out_data.len);
+            print_mem_stats();
+            print_cnt = 0;
+        }
+        print_cnt++;
+
+        // frame copy
+        esp_h264_out_buf_t *frame = calloc(1, sizeof(esp_h264_out_buf_t));
+        if (!frame) {
+            ESP_LOGE(TAG, "Failed to alloc frame");
+        }
+        frame->len = h264_out_data.len;
+        frame->buffer = heap_caps_aligned_calloc(16, 1, frame->len, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        if (!frame->buffer) {
+            ESP_LOGE(TAG, "Failed to alloc buffer. size %d", (int) frame->len);
+        }
+        esp_cache_msync(h264_out_data.buffer, (frame->len + 63) & ~63, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        memcpy(frame->buffer, h264_out_data.buffer, frame->len);
+        frame->type = h264_out_data.type;
+        // printf("inserting frame of size %d\n", (int) frame->len);
+        if (frame_queue_insert(frame) != ESP_OK) {
+            free(frame->buffer);
+            free(frame);
+            vTaskDelay(1);
+        }
+    }
+}
+
+// void esp32p4_frame_grabber_start(void)
+// void esp32p4_frame_grabber_stop(void)
+
 void esp32p4_frame_grabber_init(void)
 {
     printf("Initializing chip\n");
     init_chip();
+    vTaskDelay(pdMS_TO_TICKS(10));
     printf("Initializing clock\n");
     init_clock();
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    frame_lock = xSemaphoreCreateMutex();
 
     if (camera_init() != ESP_OK) {
         // cannot continue... Abort..!
         vTaskDelay(portMAX_DELAY);
     }
-
+    vTaskDelay(pdMS_TO_TICKS(10));
 #if SDCARD_SAVE
     sdmmc_card_t *sdcard = bsp_sdcard_mount();
     if (sdcard == NULL) {
@@ -266,6 +389,17 @@ void esp32p4_frame_grabber_init(void)
         .write_cb = &data_write_callback,
     };
     esp_h264_setup_encoder(&cfg);
+
+#if ENCODER_TASK
+#define ENC_TASK_STACK_SIZE     (8 * 1024)
+#define ENC_TASK_PRIO           (4) // lesser than the video `sender_task`
+    esp_err_t err = xTaskCreate(video_encoder_task, "video_encoder",
+                                ENC_TASK_STACK_SIZE, NULL, ENC_TASK_PRIO, NULL);
+    if (err != pdPASS) {
+        ESP_LOGE(TAG, "failed to create encoder task!");
+    }
+#endif
+
 #else
     while (1) {
         ESP_LOGI(TAG, "frames_received_cnt %d", frames_received_cnt);
@@ -273,21 +407,4 @@ void esp32p4_frame_grabber_init(void)
         // print_mem_stats();
     }
 #endif
-}
-
-esp_h264_buf_t *esp32p4_grab_one_frame()
-{
-    static int print_cnt = 100;
-    if (print_cnt == 100) {
-        ESP_LOGI(TAG, "frames_received_cnt %d, curr frame len %" PRIu32, frames_received_cnt, h264_out_data.len);
-        print_mem_stats();
-        print_cnt = 0;
-    }
-    print_cnt++;
-
-    esp_err_t ret = esp_h264_hw_enc_process_one_frame();
-    if (ret != ESP_OK) {
-        return NULL;
-    }
-    return &h264_out_data;
 }
