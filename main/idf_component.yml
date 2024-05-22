@@ -21,5 +21,12 @@ dependencies:
   espressif/esp32-camera:
     version: ^2.0.2
 
+  espressif/esp_wifi_remote:
+    version: "*"
+
+  espressif/esp_hosted:
+    version: "*"
+    pre_release: true
+
   joltwallet/littlefs:
     version: "~=1.10.0"
