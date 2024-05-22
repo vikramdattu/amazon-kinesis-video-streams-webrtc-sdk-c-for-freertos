@@ -25,7 +25,6 @@
 #include "allocators.h"
 
 static const char *TAG = "esp32p4_frame_grabber";
-
 #define H264_ENCODE     1
 // #define SDCARD_SAVE     1
 
@@ -75,21 +74,21 @@ static esp_err_t camera_init(void)
         .ver_res = HEIGHT,
         .fb_size_ptr = &camera_fb_size,
         .num_fbs = 3,
-        .expect_color_width = sizeof(uint16_t) * 8,
-        .color_mode = MIPI_CSI_YUV420_MODE,
+        .input_data_color_type = MIPI_CSI_COLOR_RAW8,
+        .output_data_color_type = MIPI_CSI_COLOR_YUV420,
 #if WIDTH > 1280
-        .clock_rate = OV5647_MIPI_IDI_CLOCK_RATE_1080P_22FPS,
-        .csi_lane_rate = OV5647_MIPI_CSI_LINE_RATE_1080P_22FPS,
+        .clock_rate_hz = OV5647_MIPI_IDI_CLOCK_RATE_1080P_22FPS,
+        .csi_lane_rate_mbps = OV5647_MIPI_CSI_LINE_RATE_1080P_22FPS / 1000 / 1000,
 #else
-        .clock_rate = OV5647_MIPI_IDI_CLOCK_RATE_720P_50FPS,
-        .csi_lane_rate = OV5647_MIPI_CSI_LINE_RATE_720P_50FPS,
+        .clock_rate_hz = OV5647_MIPI_IDI_CLOCK_RATE_720P_50FPS,
+        .csi_lane_rate_mbps = OV5647_MIPI_CSI_LINE_RATE_720P_50FPS / 1000 / 1000,
 #endif
         .flags = {
             .use_external_fb = 0,
         },
     };
-    const isp_config_t isp_cfg = ISP_CONFIG_DEFAULT(MIPI_CSI_RAW8_MODE, camera_cfg.hor_res, camera_cfg.ver_res);
-    if(bsp_camera_new(&camera_cfg, &isp_cfg) != ESP_OK) {
+    const isp_config_t isp_cfg = ISP_CONFIG_DEFAULT(camera_cfg.hor_res, camera_cfg.ver_res, ISP_COLOR_RAW8, ISP_COLOR_YUV420);
+    if(bsp_camera_new(&camera_cfg, &isp_cfg, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "camera initialization failed");
         print_mem_stats();
         return ESP_FAIL;
@@ -325,7 +324,9 @@ static void video_encoder_task(void *arg)
             ESP_LOGE(TAG, "Failed to alloc frame");
         }
         frame->len = h264_out_data.len;
-        frame->buffer = heap_caps_aligned_calloc(16, 1, frame->len, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        uint32_t actual_size = 0;
+        // frame->buffer = esp_h264_aligned_calloc(16, 1, frame->len + 64, &actual_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+        frame->buffer = heap_caps_aligned_calloc(64, 1, frame->len, MALLOC_CAP_SPIRAM);
         if (!frame->buffer) {
             ESP_LOGE(TAG, "Failed to alloc buffer. size %d", (int) frame->len);
         }

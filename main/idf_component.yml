@@ -12,17 +12,14 @@ dependencies:
       - if: "target in [esp32p4]"
         version: "*"
 
-  espressif/esp_audio_codec:
-    version: "^1.0.1"
+  # espressif/esp_audio_codec:
+    # version: "^1.0.1"
+  jason-mao/esp_audio_codec:
+    version: "*"
+    service_url: "https://components-staging.espressif.com/api"
 
   espressif/esp32-camera:
     version: ^2.0.2
-
-# use hosted for connectivity
-  # mantriyogesh/esp_hosted:
-  #   version: "0.0.5-dev.5"
-  #   rules:
-  #     - if: "target in [esp32p4]"
 
   joltwallet/littlefs:
     version: "~=1.10.0"

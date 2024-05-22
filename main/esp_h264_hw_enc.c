@@ -147,7 +147,7 @@ void esp_h264_destroy_encoder()
 esp_err_t esp_h264_setup_encoder(h264_enc_user_cfg_t *user_cfg)
 {
     esp_h264_enc_cfg_t cfg = { 0 };
-    cfg.gop = 15;
+    cfg.gop = 10;
     cfg.fps = 27;
     cfg.res.width = WIDTH;
     cfg.res.height = HEIGHT;

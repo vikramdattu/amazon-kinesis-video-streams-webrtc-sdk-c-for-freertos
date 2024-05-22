@@ -9,10 +9,10 @@
 
 #include "app_camera_esp.h"
 
-const char *TAG = "H264FramerGrabber";
+static const char *TAG = "H264FrameGrabber";
 
 #if CONFIG_IDF_TARGET_ESP32S3
-#define OLD_H264_ENCODER 1
+// #define OLD_H264_ENCODER 1
 #endif
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
@@ -27,6 +27,7 @@ const char *TAG = "H264FramerGrabber";
 #endif
 #else
 #include "esp_h264_hw_enc.h"
+#include "esp_h264_enc_single.h"
 extern void esp32p4_frame_grabber_init(void);
 extern esp_h264_buf_t *esp32p4_grab_one_frame();
 #endif
@@ -194,11 +195,15 @@ esp_h264_out_buf_t *get_h264_encoded_frame()
 {
     static bool is_first = true;
     if (is_first) {
+
+#if CONFIG_IDF_TARGET_ESP32P4
+        /* TODO: Breaking code... Needs to be fixed to use common code... */
+        esp32p4_frame_grabber_init();
+#else
         app_camera_init();
         printf("camera init done\n");
 
         initialize_h264_encoder();
-
         print_mem_stats();
 
         frame_lock = xSemaphoreCreateMutex();
@@ -214,14 +219,18 @@ esp_h264_out_buf_t *get_h264_encoded_frame()
                           NULL, ENC_TASK_PRIO, task_stack, task_buffer);
 
         printf("encoder initialized\n");
+#endif
         is_first = false;
     }
-
+#if CONFIG_IDF_TARGET_ESP32P4
+    return esp32p4_grab_one_frame();
+#else
     esp_h264_out_buf_t *frame = (esp_h264_out_buf_t *) frame_queue_get();
     if (frame) {
         // printf("got a frame with size %d\n", (int) frame->len);
     }
     return frame;
+#endif
 }
 #else
 void get_h264_encoded_frame(uint8_t **out_buf, uint32_t *frame_len, uint32_t *frame_type)
@@ -297,6 +306,7 @@ void get_h264_encoded_frame(uint8_t *out_buf, uint32_t *frame_len)
 }
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32S3
 #if OLD_H264_ENCODER
 static esp_h264_enc_t initialize_h264_encoder()
 #else
@@ -336,16 +346,20 @@ static esp_h264_enc_handle_t initialize_h264_encoder()
         printf("out_frame.raw_data.buffer allocation failed\n");
         goto h264_example_exit;
     }
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    ret = esp_h264_enc_hw_new(&cfg, &handle);
+#else
     ret = esp_h264_enc_sw_new(&cfg, &handle);
+#endif
     if (ret != ESP_H264_ERR_OK) {
-        printf("esp_h264_enc_sw_new failed ret %d, handle %p\n", ret, handle);
+        printf("esp_h264_enc_sw_new failed ret %d, handle %p\n", (int) ret, (void *) handle);
         goto h264_example_exit;
     }
 
     ret = esp_h264_enc_open(handle);
 #endif
     if (ret != ESP_H264_ERR_OK) {
-        printf("Open failed. ret %d, handle %p\n", ret, handle);
+        printf("Open failed. ret %d, handle %p\n", (int) ret, (void *) handle);
         goto h264_example_exit;
     }
 
@@ -363,3 +377,4 @@ h264_example_exit:
 #endif
     return NULL;
 }
+#endif

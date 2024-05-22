@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "H264FrameGrabber.h"
 #include "esp_h264_types.h"
 
 #define WIDTH               (1920)
@@ -16,12 +17,6 @@ typedef struct {
     uint8_t *buffer; /*<! Data buffer */
     uint32_t len;    /*<! It is buffer length in byte */
 } esp_h264_buf_t;
-
-typedef struct {
-    uint8_t *buffer; /*<! Data buffer */
-    uint32_t len;    /*<! It is buffer length in byte */
-    esp_h264_frame_type_t type; /* Frame type */
-} esp_h264_out_buf_t;
 
 // Data read callback to read raw data
 typedef void data_read_cb_t(void *ctx, esp_h264_buf_t *in_data);
