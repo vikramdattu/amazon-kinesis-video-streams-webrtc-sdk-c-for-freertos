@@ -3,6 +3,7 @@
 This project demonstrates how to port [Amazon Kinesis Video WebRTC C SDK](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c) to FreeRTOS.
 
 Following Espressif boards are tested with the example as a reference platform:
+- ESP32P4-Function-EV-Board v1.0B
 - [ESP-S3-EYE](https://github.com/espressif/esp-who/blob/master/docs/en/get-started/ESP32-S3-EYE_Getting_Started_Guide.md)
 - [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html)
 
@@ -20,6 +21,7 @@ git submodule update --init --recursive
 
 We use [ESP IDF 4.4.2](https://github.com/espressif/esp-idf/releases/tag/v4.4.2) SDK, the [ESP-Wrover-Kit](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/hw-reference/esp32/get-started-wrover-kit.html) and [ESP32-S3-EYE](https://github.com/espressif/esp-who/blob/master/docs/en/get-started/ESP32-S3-EYE_Getting_Started_Guide.md) as the reference platforms.
  - We recommend using `ESP32-S3-EYE` as it provides the camera feed and the example can be tested with the live feed.
+ - For ESP32P4, please clone `release/v5.3` branch
 
 Please git clone the ESP IDF 4.4.2 with following command
 
@@ -48,10 +50,29 @@ typedef enum {
 +#endif
 ```
 
-- The corresponding file for esp32s3 is:
+- The corresponding files for esp32s3 and esp32p4 are:
 
 ```bash
 components/esp_rom/include/esp32s3/rom/ets_sys.h
+components/esp_rom/include/esp32p4/rom/ets_sys.h
+```
+
+- ESP32-P4 is using hosted for Wi-Fi connectivity via esp32c6 interfaced board.
+Please also do following change to the IDF, to fix a current known issue:
+- On board ESP32-C6 needs to be built and flashed. Binary and instructions can be found [here](slave/README.md)
+
+```patch
+--- a/components/esp_wifi/src/wifi_netif.c
++++ b/components/esp_wifi/src/wifi_netif.c
+@@ -69,7 +69,7 @@ static esp_err_t wifi_transmit(void *h, void *buffer, size_t len)
+ static esp_err_t wifi_transmit_wrap(void *h, void *buffer, size_t len, void *netstack_buf)
+ {
+     wifi_netif_driver_t driver = h;
+-#if CONFIG_SPIRAM
++#if 0 // CONFIG_SPIRAM
+     return esp_wifi_internal_tx_by_ref(driver->wifi_if, buffer, len, netstack_buf);
+ #else
+     return esp_wifi_internal_tx(driver->wifi_if, buffer, len);
 ```
 
 Please follow the [Espressif instructions](https://docs.espressif.com/projects/esp-idf/en/stable/get-started/index.html) to set up the IDF environment.
@@ -111,6 +132,9 @@ idf.py set-target esp32
 
 # for esp32s3
 idf.py set-target esp32s3
+
+# for esp32p4
+idf.py set-target esp32p4
 ```
 
 Use menuconfig of ESP IDF to configure the project.
@@ -134,7 +158,7 @@ idf.py menuconfig
 
 ### Video source
 
- - If you are using ESP32-S3-EYE board, please skip this section. ESP32-S3-EYE uses live stream from the camera out of the box.
+ - If you are using ESP32-S3-EYE OR ESP32P4_Function_EV_Board, please skip this section. ESP32-S3-EYE and ESP32P4_Function_EV_Board use live stream from the camera out of the box.
 
 This project uses pre-recorded h.264 frame files for video streaming.  Please put the files on a SD card.  The files should look like:
 
