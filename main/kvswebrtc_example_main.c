@@ -44,11 +44,12 @@
 #endif
 
 // sdcard and hosted both cannot work on p4. Please use spiffs
-// #define USE_SPIFFS_STORAGE  1
+#define USE_SPIFFS_STORAGE  1
 
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "H264FrameGrabber.h"
+#include "OpusFrameGrabber.h"
 #endif
 
 #if USE_SPIFFS_STORAGE
@@ -365,14 +366,24 @@ static esp_err_t storage_init()
 #if USE_SPIFFS_STORAGE
 #if 1
     // Encoder warm-up code: Waste few frames before sending
-    uint32_t frame_size = 0, frame_type;
-    for (int cnt = 0; cnt < 30; cnt++) {
-        get_encoded_frame(NULL, &frame_size, &frame_type);
+    for (int cnt = 0; cnt < 20; cnt++) {
+        esp_opus_out_buf_t *opus_frame = get_opus_encoded_frame();
+        if (opus_frame) {
+            free(opus_frame->buffer);
+            free(opus_frame);
+        }
+
+        esp_h264_out_buf_t *frame = get_h264_encoded_frame();
+        if (frame) {
+            free(frame->buffer);
+            free(frame);
+        }
         vTaskDelay(pdMS_TO_TICKS(30));
     }
+
 #endif
-    // return spiffs_init();
-    return ESP_OK;
+    return spiffs_init();
+    // return ESP_OK;
 #else
     return sdcard_init();
 #endif
@@ -408,10 +419,26 @@ void app_main(void)
     print_mem_stats();
 
 #if 1
-    // if (storage_init() == ESP_FAIL) {
-    //     print_mem_stats();
-    //     return;
-    // }
+    if (storage_init() == ESP_FAIL) {
+        print_mem_stats();
+        goto exit_and_restart;
+    }
+
+#if 1 // Warmup code
+    /* Warmup: Init camera, i2s and encoder engines. Grab few frames */
+    /* FIXME: This also is removing memory issues... Remove this code and move OPUS encoder in separate task. */
+    esp_h264_out_buf_t *h264_frame = get_h264_encoded_frame();
+    if (h264_frame) {
+        free(h264_frame->buffer);
+        free(h264_frame);
+    }
+
+    esp_opus_out_buf_t *opus_frame = get_opus_encoded_frame();
+    if (opus_frame) {
+        free(opus_frame->buffer);
+        free(opus_frame);
+    }
+#endif
 
     print_mem_stats();
 
@@ -480,5 +507,10 @@ void app_main(void)
 
     print_mem_stats();
     storage_deinit();
+
+exit_and_restart:
+    printf("Restarting now...\n");
+    fflush(stdout);
+
     esp_restart();
 }

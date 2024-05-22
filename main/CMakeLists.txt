@@ -1,7 +1,17 @@
+option(ENABLE_SIGNALLING_ONLY "enable only the signalling" OFF)
+
+if (ENABLE_SIGNALLING_ONLY) # If SIGNALLING_ONLY, everything else should be turned off
+option(ENABLE_STUN_TURN "enable stun/turn" OFF)
+option(ENABLE_STREAMING "enable the streaming" OFF)
+option(ENABLE_AUDIO_STREAM "enable audio stream" OFF)
+option(ENABLE_DATA_CHANNEL "enable the data channel" OFF)
+else()
+option(ENABLE_STUN_TURN "enable stun/turn" ON)
 option(ENABLE_STREAMING "enable the streaming" ON)
 option(ENABLE_AUDIO_STREAM "enable audio stream" ON)
 option(ENABLE_DATA_CHANNEL "enable the data channel" ON)
 option(ENABLE_HEADER_CONFIG_CLIENT_INFO "enable config app client info with config header" OFF)
+endif()
 
 set(LIB_SOURCE_DIR "${CMAKE_SOURCE_DIR}/main/lib")
 
