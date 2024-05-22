@@ -11,12 +11,15 @@
 #include "esp_log.h"
 
 #include "esp_opus_enc.h"
-#include "esp_audio_enc_def.h"
-#include "esp_audio_def.h"
 
 #include "allocators.h"
 #include "OpusFrameGrabber.h"
 
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "bsp/esp-bsp.h"
+#include "bsp/bsp_board_extra.h"
+#endif
 static const char *TAG = "OpusFrameGrabber";
 
 static uint8_t *inbuf = NULL;
@@ -109,6 +112,14 @@ static void i2s_init(void)
 #if READ_SAMPLE_SIZE_30
     i2s_config.bits_per_sample = (i2s_bits_per_sample_t) 32;
 #endif
+#elif CONFIG_IDF_TARGET_ESP32P4
+    i2s_pin_config_t pin_config = {
+        .mck_io_num = 30,
+        .bck_io_num = 29,    // IIS_SCLK
+        .ws_io_num = 27,     // IIS_LCLK
+        .data_out_num = -1,  // IIS_DSIN
+        .data_in_num = 28,   // IIS_DOUT
+    };
 #else
     i2s_pin_config_t pin_config = {
         .bck_io_num = 26,    // IIS_SCLK
@@ -152,7 +163,12 @@ static void *opus_encoder_init()
 static void audio_encoder_task(void *arg)
 {
     static void *enc_handle = NULL;
+#if CONFIG_IDF_TARGET_ESP32P4
+    // esp_codec_dev_handle_t audio_handle = bsp_audio_codec_speaker_init();
+    bsp_extra_codec_init();
+#else
     i2s_init();
+#endif
     enc_handle = opus_encoder_init();
     esp_opus_enc_get_frame_size(enc_handle, &insize, &outsize);
 #if READ_SAMPLE_SIZE_30
@@ -172,6 +188,10 @@ static void audio_encoder_task(void *arg)
         out_frame.len = outsize;
 
         size_t bytes_read = 0;
+#if CONFIG_IDF_TARGET_ESP32P4
+        // esp_codec_dev_read(audio_handle, (void*)inbuf, insize);
+        bsp_extra_i2s_read(inbuf, insize, &bytes_read, 20);
+#else
 #if READ_SAMPLE_SIZE_30
         i2s_read(i2s_port, (void*)inbuf, insize * 2, &bytes_read, pdMS_TO_TICKS(20));
         // rescale the data (Actual data is 30 bits, use higher 16 bits out of those)
@@ -180,6 +200,7 @@ static void audio_encoder_task(void *arg)
         }
 #else
         i2s_read(i2s_port, (void*)inbuf, insize, &bytes_read, pdMS_TO_TICKS(20));
+#endif
 #endif
         esp_opus_out_buf_t *opus_frame = NULL;
         esp_audio_err_t ret = ESP_AUDIO_ERR_OK;
@@ -242,3 +263,9 @@ esp_opus_out_buf_t *get_opus_encoded_frame()
     }
     return opus_frame;
 }
+#else
+esp_opus_out_buf_t *get_opus_encoded_frame()
+{
+  return NULL;
+}
+#endif
