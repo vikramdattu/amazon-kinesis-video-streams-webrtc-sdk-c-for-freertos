@@ -167,7 +167,8 @@ STATUS app_credential_create(PAppCredential pAppCredential)
     pAppCredential->generateCertLock = INVALID_MUTEX_VALUE;
     pAppCredential->generatedCertificates = NULL;
 
-    CHK_STATUS((searchSslCert(pAppCredential)));
+    // CHK_STATUS((searchSslCert(pAppCredential)));
+    pAppCredential->pCaCertPath = DEFAULT_KVS_CACERT_PATH;
 
     if (((pAccessKey = GETENV(ACCESS_KEY_ENV_VAR)) != NULL) && ((pSecretKey = GETENV(SECRET_KEY_ENV_VAR)) != NULL)) {
         pSessionToken = GETENV(SESSION_TOKEN_ENV_VAR);
