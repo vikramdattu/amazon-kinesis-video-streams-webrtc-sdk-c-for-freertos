@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "sdkconfig.h"
+
 #include "AppCommon.h"
 #include "H264FrameGrabber.h"
 
@@ -12,7 +14,7 @@
 static const char *TAG = "H264FrameGrabber";
 
 #if CONFIG_IDF_TARGET_ESP32S3
-// #define OLD_H264_ENCODER 1
+#define OLD_H264_ENCODER 1
 #endif
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4

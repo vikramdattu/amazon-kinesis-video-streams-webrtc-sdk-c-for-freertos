@@ -48,9 +48,9 @@
 
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "bsp/esp32_p4_function_ev_board.h"
+#endif
 #include "H264FrameGrabber.h"
 #include "OpusFrameGrabber.h"
-#endif
 
 #if USE_SPIFFS_STORAGE
 #include "esp_spiffs.h"
