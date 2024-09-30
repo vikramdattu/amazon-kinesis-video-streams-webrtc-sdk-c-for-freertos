@@ -37,7 +37,7 @@ typedef struct __AppMediaSrc {
     PVOID (*app_media_source_run)(PVOID pArgs);
     STATUS (*app_media_source_shutdown)(PMediaContext pMediaContext);
     STATUS (*app_media_source_isShutdown)(PMediaContext pMediaContext, PBOOL pShutdown);
-    STATUS (*app_media_source_detroy)(PMediaContext* ppMediaContext);
+    STATUS (*app_media_source_destroy)(PMediaContext* ppMediaContext);
 } AppMediaSrc, *PAppMediaSrc;
 
 #ifdef __cplusplus

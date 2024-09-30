@@ -941,7 +941,7 @@ STATUS freeApp(PAppConfiguration* ppAppConfiguration)
 
     app_webrtc_deinit(pAppConfiguration);
     if (pAppMediaSrc != NULL) {
-        pAppMediaSrc->app_media_source_detroy(&pAppConfiguration->pMediaContext);
+        pAppMediaSrc->app_media_source_destroy(&pAppConfiguration->pMediaContext);
     }
 
     if (IS_VALID_CVAR_VALUE(pAppConfiguration->cvar) && IS_VALID_MUTEX_VALUE(pAppConfiguration->appConfigurationObjLock)) {

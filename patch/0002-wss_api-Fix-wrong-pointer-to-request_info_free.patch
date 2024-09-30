@@ -1,0 +1,40 @@
+From c43c51edb21d9b0748cee752cb06353a14c79012 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Mon, 30 Sep 2024 18:13:43 +0530
+Subject: [PATCH] wss_api: Fix wrong pointer to request_info_free
+
+http_api: Fixed erroreous reallocs
+---
+ src/source/api_call/http_api.c | 2 +-
+ src/source/api_call/wss_api.c  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/source/api_call/http_api.c b/src/source/api_call/http_api.c
+index 5b668b3dd..374eebc24 100644
+--- a/src/source/api_call/http_api.c
++++ b/src/source/api_call/http_api.c
+@@ -534,7 +534,7 @@ STATUS http_api_getIceConfig(PSignalingClient pSignalingClient, PUINT32 pHttpSta
+                                        uSendBufLen, FALSE, TRUE, NULL)) == STATUS_HTTP_BUF_OVERFLOW) {
+             DLOGD("The send buffer(%u) is not enough", uSendBufLen);
+             uSendBufLen <<= 1;
+-            CHK(NULL != (pHttpSendBuffer = (uint8_t*) MEMREALLOC(uSendBufLen, 1)), STATUS_HTTP_NOT_ENOUGH_MEMORY);
++            CHK(NULL != (pHttpSendBuffer = (uint8_t*) MEMREALLOC(pHttpSendBuffer, uSendBufLen)), STATUS_HTTP_NOT_ENOUGH_MEMORY);
+             uRetryAllocation--;
+         } else {
+             break;
+diff --git a/src/source/api_call/wss_api.c b/src/source/api_call/wss_api.c
+index 441915705..119179970 100644
+--- a/src/source/api_call/wss_api.c
++++ b/src/source/api_call/wss_api.c
+@@ -201,7 +201,7 @@ CleanUp:
+     SAFE_MEMFREE(pUrl);
+     SAFE_MEMFREE(pHttpSendBuffer);
+     SAFE_MEMFREE(pHttpRecvBuffer);
+-    request_info_free(pRequestInfo);
++    request_info_free(&pRequestInfo);
+ 
+     WSS_API_EXIT();
+     return retStatus;
+-- 
+2.39.3 (Apple Git-146)
+

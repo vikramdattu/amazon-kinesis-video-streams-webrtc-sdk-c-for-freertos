@@ -168,7 +168,7 @@ PVOID sendAudioPackets(PVOID args)
     while (!ATOMIC_LOAD_BOOL(&pFileSrcContext->shutdownFileSrc)) {
         fileIndex = fileIndex % NUMBER_OF_OPUS_FRAME_FILES + 1;
         snprintf(filePath, MAX_PATH_LEN, "/sdcard/opusSampleFrames/sample-%03d.opus", fileIndex);
-        
+
         CHK(readFrameFromDisk(NULL, &frameSize, filePath) == STATUS_SUCCESS, STATUS_MEDIA_AUDIO_SINK);
         // Re-alloc if needed
         if (frameSize > pCodecStreamConf->frameBufferSize) {
@@ -207,7 +207,7 @@ CleanUp:
     return (PVOID) (ULONG_PTR) retStatus;
 }
 
-STATUS app_media_source_detroy(PMediaContext* ppMediaContext)
+STATUS app_media_source_destroy(PMediaContext* ppMediaContext)
 {
     STATUS retStatus = STATUS_SUCCESS;
     PFileSrcContext pFileSrcContext;
@@ -257,7 +257,7 @@ CleanUp:
 
     if (STATUS_FAILED(retStatus)) {
         if (pFileSrcContext != NULL) {
-            app_media_source_detroy(pFileSrcContext);
+            app_media_source_destroy((PMediaContext *) &pFileSrcContext);
         }
     }
 
@@ -379,5 +379,5 @@ AppMediaSrc gAppMediaSrc = {
     .app_media_source_run = app_media_source_run,
     .app_media_source_shutdown = app_media_source_shutdown,
     .app_media_source_isShutdown = NULL,
-    .app_media_source_detroy = app_media_source_detroy
+    .app_media_source_destroy = app_media_source_destroy
 };
