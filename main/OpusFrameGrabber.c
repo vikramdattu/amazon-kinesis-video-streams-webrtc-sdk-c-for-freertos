@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <freertos/freeRTOS.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include "driver/i2s.h"

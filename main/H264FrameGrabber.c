@@ -39,7 +39,7 @@ static esp_h264_enc_handle_t initialize_h264_encoder();
 #endif
 
 #ifdef ENCODER_TASK
-#include <freertos/freeRTOS.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 static SemaphoreHandle_t frame_lock;

@@ -89,7 +89,7 @@ CleanUp:
 #define USE_OPUS_ENC    1
 #include "H264FrameGrabber.h"
 #include "OpusFrameGrabber.h"
-#include <freertos/freeRTOS.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #endif
 
